@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "run": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "project_name": { "type": "string" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "duration_ms": { "type": "integer" }
+      },
+      "required": ["id", "project_name", "status", "created_at"]
+    },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "event.schema.json" }
+    }
+  },
+  "required": ["run", "events"]
+}

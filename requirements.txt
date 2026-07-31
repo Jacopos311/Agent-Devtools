@@ -1,0 +1,27 @@
+# ============================================================
+# AGENT DEVTOOLS - REQUISITI
+# ============================================================
+
+# Core SDK e Server
+click>=8.1.7
+pydantic>=2.5.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+sqlalchemy>=2.0.23
+python-multipart>=0.0.6
+colorama>=0.4.6
+
+# Integrazioni (opzionali)
+langgraph>=0.0.20
+openai-agents>=0.0.2
+crewai>=0.30.0
+
+# Sviluppo e test
+pytest>=7.4.0
+pytest-cov>=4.1.0
+httpx>=0.25.0
+ruff>=0.1.0
+mypy>=1.7.0
+
+# UI (queste vanno installate separatamente con pnpm/npm)
+# Vedere apps/web/package.json per le dipendenze Node.js

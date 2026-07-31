@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "agent-devtools"
+version = "0.1.0"
+description = "Local-first debugger for AI agents"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/your/agent-devtools"
+repository = "https://github.com/your/agent-devtools"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+click = "^8.1.7"
+pydantic = "^2.5.0"
+fastapi = "^0.104.0"
+uvicorn = {version = "^0.24.0", extras = ["standard"]}
+sqlalchemy = "^2.0.23"
+python-multipart = "^0.0.6"
+colorama = "^0.4.6"
+
+[tool.poetry.extras]
+langgraph = ["langgraph"]
+openai-agents = ["openai-agents"]
+crewai = ["crewai"]
+all = ["langgraph", "openai-agents", "crewai"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+httpx = "^0.25.0"
+ruff = "^0.1.0"
+mypy = "^1.7.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+agent-devtools = "agent_devtools.cli:cli"
