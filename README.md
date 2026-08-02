@@ -1,6 +1,6 @@
 # Agent DevTools
 
-**Chrome DevTools for AI Agents. Understand exactly why your AI agent behaved that way.**
+**Inspect, replay and debug AI agent execution. Understand exactly why your AI agent behaved that way.**
 
 Most AI observability tools tell you what happened. Agent DevTools tells you **why**.
 
