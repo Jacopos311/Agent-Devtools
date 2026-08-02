@@ -1,5 +1,11 @@
 
 
+https://github.com/user-attachments/assets/170840ee-a694-409f-b38d-b605683143bb
+
+
+
+
+
 # agent-devtools
 
 **Chrome DevTools for AI agents.** Instrument a run, then see exactly why
