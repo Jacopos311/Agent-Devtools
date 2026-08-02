@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/agent-devtools/agent-devtools/schemas/fixture.schema.json",
+  "title": "agent-devtools fixture",
+  "description": "Portable trace/fixture format. This is an escape hatch for reproducible bug reports, GitHub issues, and CI regression tests -- not the primary ingestion path. The primary path is instrumenting a run directly with the Python SDK.",
+  "type": "object",
+  "required": ["schema", "run", "events"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "agent-devtools/fixture@1"
+    },
+    "run": {
+      "type": "object",
+      "required": ["id", "agent_name", "started_at", "status"],
+      "properties": {
+        "id": { "type": "string" },
+        "agent_name": { "type": "string" },
+        "started_at": { "type": "number" },
+        "finished_at": { "type": ["number", "null"] },
+        "status": { "type": "string", "enum": ["running", "ok", "error"] },
+        "metadata": { "type": "object" }
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "ts", "type", "payload"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "ts": { "type": "number" },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.started",
+              "user.input",
+              "retrieval.query",
+              "retrieval.result",
+              "context.block",
+              "prompt.assembled",
+              "model.request",
+              "model.response",
+              "tool.call",
+              "tool.result",
+              "memory.read",
+              "memory.write",
+              "memory.update",
+              "memory.delete",
+              "state.snapshot",
+              "run.finished",
+              "assertion.passed",
+              "assertion.failed"
+            ]
+          },
+          "payload": { "type": "object" }
+        }
+      }
+    }
+  }
+}

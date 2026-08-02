@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: agent-devtools
+Version: 0.1.0
+Summary: A local-first causal debugger for AI agent runs: instrument a run, then see exactly why it produced the output it did.
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn>=0.29

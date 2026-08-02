@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>agent-devtools</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">▣</span>
+    <span class="brand-name">agent<span class="brand-dim">-devtools</span></span>
+  </div>
+  <div class="topbar-right">
+    <div class="db-status">
+      <span class="dot" id="conn-dot"></span>
+      <span id="db-path">connecting&hellip;</span>
+    </div>
+    <button class="clear-btn" id="clear-logs-btn" title="Delete all runs and events">Clear Logs</button>
+  </div>
+</header>
+
+<nav class="tabstrip" id="tabstrip">
+  <button class="tab active" data-tab="replay">Replay</button>
+  <button class="tab" data-tab="graph">Graph</button>
+  <button class="tab" data-tab="prompt">Prompt</button>
+  <button class="tab" data-tab="context">Context</button>
+  <button class="tab" data-tab="retrieval">Retrieval</button>
+  <button class="tab" data-tab="memory">Memory</button>
+  <button class="tab" data-tab="tools">Tools</button>
+  <button class="tab" data-tab="diff">Diff</button>
+</nav>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <span>Runs</span>
+      <span class="run-count" id="run-count">0</span>
+    </div>
+    <div class="run-list" id="run-list">
+      <div class="empty-hint">Waiting for a run&hellip;</div>
+    </div>
+    <div class="sidebar-footer">
+      <code>agent-devtools serve</code>
+    </div>
+  </aside>
+
+  <main class="content" id="content">
+    <div class="empty-state">
+      <div class="empty-title">No run selected</div>
+      <div class="empty-body">Instrument a run with the Python SDK, then pick it up on the left.</div>
+    </div>
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

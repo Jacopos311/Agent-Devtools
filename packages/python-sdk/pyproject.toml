@@ -1,0 +1,28 @@
+[project]
+name = "agent-devtools"
+version = "0.2.0"
+description = "A local-first causal debugger for AI agent runs: instrument a run, then see exactly why it produced the output it did."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.1.0"]
+groq = ["langchain-core>=0.1.0", "langchain-groq>=0.1.0"]
+
+[project.scripts]
+agent-devtools = "agent_devtools.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_devtools*"]
+
+[tool.setuptools.package-data]
+"agent_devtools.server" = ["static/*", "static/**/*"]

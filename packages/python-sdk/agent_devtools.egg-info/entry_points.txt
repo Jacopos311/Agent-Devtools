@@ -1,0 +1,2 @@
+[console_scripts]
+agent-devtools = agent_devtools.cli:main

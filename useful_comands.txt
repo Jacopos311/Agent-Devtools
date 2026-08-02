@@ -1,0 +1,171 @@
+========================================
+  AGENT-DEVTOOLS — COMANDI UTILI
+========================================
+
+----------------------------------------
+  INSTALLAZIONE / SETUP
+----------------------------------------
+
+# Installa il pacchetto SDK in modalità editable (dalla root del repo)
+pip install -e packages/python-sdk
+
+# Oppure dalla cartella del pacchetto
+cd packages/python-sdk
+pip install -e .
+
+
+----------------------------------------
+  AVVIO SERVER
+----------------------------------------
+
+# Avvia il server DevTools (default: http://127.0.0.1:4173)
+agent-devtools serve
+
+# Alternativa equivalente
+python -m agent_devtools.cli serve
+
+# Con database personalizzato
+agent-devtools serve --db /percorso/al/trace.db
+
+# Con host/porta personalizzati
+agent-devtools serve --host 0.0.0.0 --port 8080
+
+
+----------------------------------------
+  GENERARE RUNS (SDK Python)
+----------------------------------------
+
+# Script minimo: crea una run con eventi
+python -c "
+from agent_devtools import trace
+
+with trace.run('my-agent') as run:
+    run.input('Ciao!')
+    run.retrieval('query', [{'id': 'doc1', 'content': 'risultato', 'source': 'memory', 'score': 0.9, 'rank': 1, 'selected': True}])
+    run.context_block(source='memory', key='ctx1', content='dati contesto', order=0)
+    run.prompt(system='Sei un agente di test.', messages=[{'role': 'user', 'content': 'Ciao'}], context=['ctx1'])
+    run.tool_call(name='test_tool', args={'x': 1}, result={'y': 2})
+    run.memory_write(key='test_key', value='test_value')
+    run.output('Risposta di test')
+"
+
+# Con run_id personalizzato e database specifico
+python -c "
+from agent_devtools import trace
+
+with trace.run('my-agent', run_id='my-run-1', db_path='percorso/trace.db') as run:
+    run.input('Messaggio utente')
+    run.output('Risposta')
+"
+
+# Con metadata
+python -c "
+from agent_devtools import trace
+
+with trace.run('my-agent', metadata={'env': 'prod', 'version': '1.0'}) as run:
+    run.input('Messaggio')
+    run.output('Risposta')
+"
+
+# Con debug assertions (per CI)
+python -c "
+from agent_devtools import trace
+
+with trace.run('my-agent') as run:
+    run.input('Quanto costa?')
+    answer = 'Il prezzo è $19/mo'
+    run.assert_that('no stale pricing', '$19' not in answer, details='non deve citare il prezzo vecchio')
+    run.output(answer)
+"
+
+
+----------------------------------------
+  ESEMPIO STALE-MEMORY-BUG
+----------------------------------------
+
+# Esegui la run "buona"
+cd examples/stale-memory-bug
+python good_run.py
+
+# Esegui la run "cattiva"
+python bad_run.py
+
+# Poi avvia il server e confronta le due run nel tab Diff
+agent-devtools serve
+
+
+----------------------------------------
+  TEST / CI
+----------------------------------------
+
+# Test end-to-end (scrive una trace e verifica lettura/export/import)
+python test_trace_e2e.py
+
+# Test fixture-based per CI (fallisce se ci sono assertion.failed)
+agent-devtools test fixtures/*.json
+
+
+----------------------------------------
+  API ENDPOINTS (curl)
+----------------------------------------
+
+# Health check
+curl http://127.0.0.1:4173/api/health
+
+# Lista tutte le run
+curl http://127.0.0.1:4173/api/runs
+
+# Dettaglio di una singola run (con eventi)
+curl http://127.0.0.1:4173/api/runs/{run_id}
+
+# CANCELLA tutte le run e gli eventi (Clear Logs)
+curl -X DELETE http://127.0.0.1:4173/api/runs
+
+# CANCELLA una singola run e i suoi eventi
+curl -X DELETE http://127.0.0.1:4173/api/runs/{run_id}
+
+# Esporta una run come fixture JSON
+curl http://127.0.0.1:4173/api/runs/{run_id}/fixture
+
+# Diff tra due run
+curl "http://127.0.0.1:4173/api/diff?a={run_a}&b={run_b}"
+
+# Viste derivate per tab specifici
+curl http://127.0.0.1:4173/api/runs/{run_id}/prompt
+curl http://127.0.0.1:4173/api/runs/{run_id}/context
+curl http://127.0.0.1:4173/api/runs/{run_id}/retrieval
+curl http://127.0.0.1:4173/api/runs/{run_id}/memory
+curl http://127.0.0.1:4173/api/runs/{run_id}/tools
+curl http://127.0.0.1:4173/api/runs/{run_id}/assertions
+
+
+----------------------------------------
+  SQLITE (verifica diretta del database)
+----------------------------------------
+
+# Apri il database interattivamente
+sqlite3 .agent_devtools/trace.db
+
+# Conta le run
+sqlite3 .agent_devtools/trace.db "SELECT COUNT(*) FROM runs;"
+
+# Conta gli eventi
+sqlite3 .agent_devtools/trace.db "SELECT COUNT(*) FROM events;"
+
+# Lista tutte le run
+sqlite3 .agent_devtools/trace.db "SELECT id, agent_name, status FROM runs;"
+
+# Lista tutti gli eventi
+sqlite3 .agent_devtools/trace.db "SELECT run_id, type, seq FROM events ORDER BY run_id, seq;"
+
+# Svuota manualmente le tabelle (equivalente a Clear Logs)
+sqlite3 .agent_devtools/trace.db "DELETE FROM events; DELETE FROM runs;"
+
+
+----------------------------------------
+  VARIABILE D'AMBIENTE
+----------------------------------------
+
+# Punta il server/SDK a un database specifico
+set AGENT_DEVTOOLS_DB=C:\percorso\trace.db   (Windows)
+export AGENT_DEVTOOLS_DB=/percorso/trace.db  (Linux/macOS)
