@@ -154,6 +154,8 @@ Fails the build on any `assertion.failed` event.
 
 ---
 
+⭐ Star the repo if it saved you hours of debugging.
+
 ## License
 
 MIT. See `LICENSE`.
