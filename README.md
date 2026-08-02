@@ -1,12 +1,10 @@
-
-
-https://github.com/user-attachments/assets/170840ee-a694-409f-b38d-b605683143bb
-
 # Agent DevTools
 
 **Chrome DevTools for AI Agents. Understand exactly why your AI agent behaved that way.**
 
 Most AI observability tools tell you what happened. Agent DevTools tells you **why**.
+
+https://github.com/user-attachments/assets/170840ee-a694-409f-b38d-b605683143bb
 
 ![Agent DevTools Demo](assets/demo.gif)
 
