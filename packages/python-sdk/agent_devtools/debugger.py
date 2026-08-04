@@ -201,11 +201,55 @@ class AgentDebugger:
             # Someone (maybe us, maybe a previous `agent-devtools serve`)
             # is already listening; just reuse it.
             self._server_started = True
+            self._warn_if_db_mismatch()
             print(
                 f"agent-devtools: reusing existing server at "
                 f"http://{self.host}:{self.port}",
                 file=sys.stderr,
             )
+
+    def _warn_if_db_mismatch(self) -> None:
+        """If an existing server is already listening on our port, check
+        which database it is serving and warn loudly when it differs from
+        the one this debugger writes to.  A silent mismatch is the #1 cause
+        of "my runs don't show up in the UI"."""
+        import json
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(
+                f"http://{self.host}:{self.port}/api/health", timeout=2
+            ) as resp:
+                health = json.loads(resp.read())
+        except Exception:
+            # Server not responding yet (or not an agent-devtools server);
+            # nothing useful to compare.
+            return
+
+        server_db = health.get("db", "")
+        if not server_db:
+            return
+
+        # Normalize paths for comparison (resolve relative -> absolute).
+        import os
+
+        server_abs = os.path.abspath(server_db)
+        mine_abs = os.path.abspath(self.db_path)
+        if os.path.normcase(server_abs) == os.path.normcase(mine_abs):
+            return
+
+        print(
+            f"\n"
+            f"agent-devtools: WARNING -- database mismatch!\n"
+            f"  The server on port {self.port} is serving:\n"
+            f"    {server_abs}\n"
+            f"  but this debugger writes to:\n"
+            f"    {mine_abs}\n"
+            f"  Runs you create now will NOT appear in the UI.\n"
+            f"  Fix: stop the existing server and start it with the same\n"
+            f"  database, e.g.  agent-devtools serve --db {mine_abs}\n",
+            file=sys.stderr,
+        )
 
     def open_ui(self) -> None:
         """Open the Dashboard in the default browser."""
