@@ -117,6 +117,7 @@ document.getElementById("tabstrip").addEventListener("click", (e) => {
   document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
   btn.classList.add("active");
   state.activeTab = btn.dataset.tab;
+  history.replaceState(null, "", "#" + state.activeTab);
   renderActiveTab();
 });
 
@@ -417,12 +418,57 @@ async function renderContext() {
 /* Retrieval tab                                                          */
 /* -------------------------------------------------------------------- */
 
+function fmtScore(v) {
+  if (v === null || v === undefined) return "\u2014";
+  return escapeHtml(v);
+}
+
+function renderRetrievalMeta(exp) {
+  const rows = [];
+  if (exp.rewritten_query) {
+    rows.push(`<div class="retr-meta-row"><span class="k">rewritten query:</span> ${escapeHtml(exp.rewritten_query)}</div>`);
+  }
+  if (exp.filters && Object.keys(exp.filters).length) {
+    rows.push(`<div class="retr-meta-row"><span class="k">filters:</span> ${escapeHtml(JSON.stringify(exp.filters))}</div>`);
+  }
+  if (exp.embedding_model) {
+    rows.push(`<div class="retr-meta-row"><span class="k">embedding model:</span> ${escapeHtml(exp.embedding_model)}</div>`);
+  }
+  if (exp.threshold !== undefined && exp.threshold !== null) {
+    rows.push(`<div class="retr-meta-row"><span class="k">threshold:</span> ${escapeHtml(exp.threshold)}</div>`);
+  }
+  if (exp.rerank_threshold !== undefined && exp.rerank_threshold !== null) {
+    rows.push(`<div class="retr-meta-row"><span class="k">rerank threshold:</span> ${escapeHtml(exp.rerank_threshold)}</div>`);
+  }
+  return rows.join("");
+}
+
+function renderRetrievalResultRow(r) {
+  const selected = r.selected === true;
+  const rejected = r.selected === false;
+  const stateBadge = selected
+    ? `<span class="retr-state selected">\u2713 selected</span>`
+    : rejected
+    ? `<span class="retr-state rejected">\u2717 rejected</span>`
+    : `<span class="retr-state unknown">\u2014</span>`;
+  return `
+    <tr class="${selected ? "selected" : ""}">
+      <td><span class="rank-pill">#${r.rank ?? "-"}</span></td>
+      <td class="mono">${escapeHtml(r.id || "")}</td>
+      <td>${escapeHtml(r.source || "")}</td>
+      <td class="mono">${fmtScore(r.score)}</td>
+      <td class="mono">${fmtScore(r.rerank_score)}</td>
+      <td class="mono">${fmtScore(r.threshold)}</td>
+      <td>${stateBadge}</td>
+      <td class="retr-reason">${escapeHtml(r.reason || "")}</td>
+    </tr>`;
+}
+
 async function renderRetrieval() {
   const content = document.getElementById("content");
-  const data = await api(`/runs/${encodeURIComponent(state.selectedRunId)}/retrieval`);
-  const results = data.events.filter((e) => e.type === "retrieval.result");
-  const queries = data.events.filter((e) => e.type === "retrieval.query");
-  if (!results.length) {
+  const data = await api(`/runs/${encodeURIComponent(state.selectedRunId)}/retrieval/explain`);
+  const explanations = data.explanations || [];
+  if (!explanations.length) {
     content.innerHTML = emptyStateHtml(
       "No retrieval recorded",
       "Call run.retrieval(query, results) to see queries, scores, ranks and which candidates were selected."
@@ -430,32 +476,23 @@ async function renderRetrieval() {
     return;
   }
   let html = `<div class="panel-title">Retrieval</div>`;
-  results.forEach((e, idx) => {
-    const q = queries[idx]?.payload?.query ?? e.payload.query;
-    const rows = [...(e.payload.results || [])].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  explanations.forEach((exp) => {
+    const rows = [...(exp.results || [])].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
     html += `
       <div class="card">
-        <div class="kv" style="margin-bottom:8px;"><span class="k">query:</span> ${escapeHtml(q)}</div>
+        <div class="retr-query-row">
+          <span class="k">query:</span> ${escapeHtml(exp.query)}
+        </div>
+        ${renderRetrievalMeta(exp)}
         <div class="scroll-x">
-        <table class="rt">
-          <thead><tr><th>Rank</th><th>Id</th><th>Source</th><th>Score</th><th>Content</th><th></th></tr></thead>
+        <table class="rt retr-table">
+          <thead><tr><th>Rank</th><th>Id</th><th>Source</th><th>Score</th><th>Rerank</th><th>Threshold</th><th>State</th><th>Reason</th></tr></thead>
           <tbody>
-            ${rows
-              .map(
-                (r) => `
-              <tr class="${r.selected ? "selected" : ""}">
-                <td><span class="rank-pill">#${r.rank ?? "-"}</span></td>
-                <td class="mono">${escapeHtml(r.id || "")}</td>
-                <td>${escapeHtml(r.source || "")}</td>
-                <td class="mono">${r.score ?? "-"}</td>
-                <td>${escapeHtml(truncate(r.content, 140))}</td>
-                <td>${r.selected ? "\u2713" : ""}</td>
-              </tr>`
-              )
-              .join("")}
+            ${rows.map(renderRetrievalResultRow).join("")}
           </tbody>
         </table>
         </div>
+        ${exp.summary ? `<div class="retr-summary">${escapeHtml(exp.summary)}</div>` : ""}
       </div>`;
   });
   content.innerHTML = html;
@@ -591,6 +628,11 @@ function renderDiffResult(data) {
 }
 
 function renderDiffDetail(name, d) {
+  // The chunks section is a side-by-side table, not a detail card.
+  if (name === "chunks") {
+    return renderChunkDiff(d);
+  }
+
   switch (name) {
     case "input":
     case "output":
@@ -684,6 +726,122 @@ function renderDiffDetail(name, d) {
 }
 
 /* -------------------------------------------------------------------- */
+/* Memory Chunk Diff -- side-by-side chunk comparison                      */
+/* -------------------------------------------------------------------- */
+
+const CHUNK_STATUS_META = {
+  added: { label: "newly retrieved", cls: "chunk-added" },
+  removed: { label: "removed", cls: "chunk-removed" },
+  newly_selected: { label: "newly selected", cls: "chunk-newly-selected" },
+  deselected: { label: "deselected", cls: "chunk-deselected" },
+  rank_changed: { label: "rank changed", cls: "chunk-rank-changed" },
+  score_changed: { label: "score changed", cls: "chunk-score-changed" },
+};
+
+function chunkStatusBadge(status) {
+  const meta = CHUNK_STATUS_META[status];
+  if (!meta) return "";
+  return `<span class="chunk-status ${meta.cls}">${meta.label}</span>`;
+}
+
+function chunkScoreCell(v, highlight) {
+  if (v === null || v === undefined) return `<td class="mono chunk-empty">\u2014</td>`;
+  return `<td class="mono ${highlight ? "chunk-highlight" : ""}">${escapeHtml(v)}</td>`;
+}
+
+function chunkRankCell(v, highlight) {
+  if (v === null || v === undefined) return `<td class="mono chunk-empty">\u2014</td>`;
+  return `<td class="mono ${highlight ? "chunk-highlight" : ""}"><span class="rank-pill">#${escapeHtml(v)}</span></td>`;
+}
+
+function chunkSelectedCell(v) {
+  if (v === true) return `<td><span class="chunk-selected">\u2713 selected</span></td>`;
+  if (v === false) return `<td><span class="chunk-rejected">\u2717 rejected</span></td>`;
+  return `<td class="chunk-empty">\u2014</td>`;
+}
+
+function chunkDeltaCell(delta) {
+  if (delta === null || delta === undefined) return `<td class="mono chunk-empty">\u2014</td>`;
+  const cls = delta > 0 ? "chunk-delta-up" : delta < 0 ? "chunk-delta-down" : "chunk-delta-flat";
+  const sign = delta > 0 ? "+" : "";
+  return `<td class="mono ${cls}">${sign}${escapeHtml(delta)}</td>`;
+}
+
+function renderChunkDiff(rows) {
+  const rowHtml = rows
+    .map((r) => {
+      const good = r.good || {};
+      const bad = r.bad || {};
+      // Highlight rank/score cells whenever the values differ between runs,
+      // regardless of the primary status tag (e.g. a chunk can be both
+      // newly selected AND moved from rank #7 to rank #1).
+      const rankChanged = good.rank !== undefined && bad.rank !== undefined && good.rank !== bad.rank;
+      const scoreChanged = good.score !== undefined && bad.score !== undefined && good.score !== bad.score;
+
+      // Replacement callout: "Chunk A replaced Chunk B."
+      let replacement = "";
+      if (r.replaced_by) {
+        replacement = `<div class="chunk-replacement">Chunk <span class="mono">${escapeHtml(
+          r.chunk_id
+        )}</span> replaced Chunk <span class="mono">${escapeHtml(r.replaced_by)}</span> in the final prompt.</div>`;
+      } else if (r.replaces) {
+        replacement = `<div class="chunk-replacement">Chunk <span class="mono">${escapeHtml(
+          r.replaces
+        )}</span> was replaced by Chunk <span class="mono">${escapeHtml(r.chunk_id)}</span> in the final prompt.</div>`;
+      }
+
+      return `
+      <tr class="chunk-row ${r.status}">
+        <td>
+          <div class="chunk-id-row">
+            <span class="mono chunk-id">${escapeHtml(r.chunk_id)}</span>
+            ${chunkStatusBadge(r.status)}
+          </div>
+          <div class="chunk-source">${escapeHtml(r.source || "")}</div>
+          ${replacement}
+        </td>
+        <td class="chunk-side good-side">
+          ${chunkRankCell(good.rank, rankChanged)}
+          ${chunkScoreCell(good.score, scoreChanged)}
+          ${chunkScoreCell(good.rerank_score, false)}
+          ${chunkSelectedCell(good.selected)}
+        </td>
+        <td class="chunk-side bad-side">
+          ${chunkRankCell(bad.rank, rankChanged)}
+          ${chunkScoreCell(bad.score, scoreChanged)}
+          ${chunkScoreCell(bad.rerank_score, false)}
+          ${chunkSelectedCell(bad.selected)}
+        </td>
+        <td>${chunkDeltaCell(r.similarity_delta)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `
+    <div class="card chunk-diff-card">
+      <div class="scroll-x">
+      <table class="chunk-diff">
+        <thead>
+          <tr>
+            <th class="chunk-col-id">Chunk</th>
+            <th class="chunk-col-side">
+              <span class="diff-col-head good" style="border:none;padding:0;margin:0;">good run</span>
+              <div class="chunk-subhead">rank &middot; score &middot; rerank &middot; state</div>
+            </th>
+            <th class="chunk-col-side">
+              <span class="diff-col-head bad" style="border:none;padding:0;margin:0;">bad run</span>
+              <div class="chunk-subhead">rank &middot; score &middot; rerank &middot; state</div>
+            </th>
+            <th class="chunk-col-delta">\u0394 score</th>
+          </tr>
+        </thead>
+        <tbody>${rowHtml}</tbody>
+      </table>
+      </div>
+    </div>`;
+}
+
+/* -------------------------------------------------------------------- */
 /* Clear logs                                                             */
 /* -------------------------------------------------------------------- */
 
@@ -748,6 +906,14 @@ async function init() {
     document.getElementById("db-path").textContent = "server unreachable";
   }
   await refreshRuns();
+
+  // Deep-link to a tab via the URL hash, e.g. /#diff
+  const hashTab = location.hash.replace("#", "");
+  if (hashTab) {
+    const tabBtn = document.querySelector(`.tab[data-tab="${hashTab}"]`);
+    if (tabBtn) tabBtn.click();
+  }
+
   setInterval(refreshRuns, 4000);
 }
 

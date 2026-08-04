@@ -24,6 +24,7 @@ order, and why it answered the way it did.
 """
 
 from . import trace  # noqa: F401
+from . import explain  # noqa: F401
 from .store import TraceStore, default_db_path  # noqa: F401
 from .diff import diff_runs  # noqa: F401
 from .adapters import LangChainTraceHandler  # noqa: F401
@@ -33,6 +34,7 @@ from .debugger import DEFAULT_UI_PORT  # noqa: F401
 
 __all__ = [
     "trace",
+    "explain",
     "TraceStore",
     "default_db_path",
     "diff_runs",

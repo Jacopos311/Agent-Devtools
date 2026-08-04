@@ -56,6 +56,102 @@ def _index_retrieval_results(events):
     return out
 
 
+def _rerank_score(r):
+    """Reranker score if the retrieval result carries one."""
+    if r is None:
+        return None
+    return r.get("rerank_score", r.get("reranker_score"))
+
+
+def _final_prompt_context(events):
+    """Chunk ids that made it into the final assembled prompt."""
+    prompt = _latest(events, "prompt.assembled")
+    if not prompt:
+        return []
+    return prompt.payload.get("context") or []
+
+
+def _chunk_status(good, bad):
+    """Classify what changed for a chunk present in both runs."""
+    if good.get("selected") and not bad.get("selected"):
+        return "deselected"
+    if not good.get("selected") and bad.get("selected"):
+        return "newly_selected"
+    if good.get("rank") != bad.get("rank"):
+        return "rank_changed"
+    if good.get("score") != bad.get("score"):
+        return "score_changed"
+    return "unchanged"
+
+
+def _diff_chunks(events_a, events_b):
+    """Side-by-side comparison of every retrieved chunk across two runs.
+
+    Returns a list of row dicts, one per chunk that changed (or took part
+    in a final-prompt replacement). Each row carries the good/bad values
+    for rank, retrieval score, reranker score and selected state, plus a
+    status tag and the similarity delta.
+    """
+    retr_a = _index_retrieval_results(events_a)
+    retr_b = _index_retrieval_results(events_b)
+    ctx_a = _final_prompt_context(events_a)
+    ctx_b = _final_prompt_context(events_b)
+
+    # Same position in the final prompt context, different chunk => replacement.
+    replacements = {}  # good chunk id -> bad chunk id
+    for i in range(max(len(ctx_a), len(ctx_b))):
+        ca = ctx_a[i] if i < len(ctx_a) else None
+        cb = ctx_b[i] if i < len(ctx_b) else None
+        if ca is not None and cb is not None and ca != cb:
+            replacements[ca] = cb
+    replaced_by = {v: k for k, v in replacements.items()}  # bad chunk id -> good chunk id
+
+    rows = []
+    all_ids = list(dict.fromkeys(list(retr_a.keys()) + list(retr_b.keys()) + ctx_a + ctx_b))
+    for cid in all_ids:
+        good = retr_a.get(cid)
+        bad = retr_b.get(cid)
+        if good is None and bad is None:
+            continue
+        if good is None:
+            status = "added"
+        elif bad is None:
+            status = "removed"
+        else:
+            status = _chunk_status(good, bad)
+
+        good_score = good.get("score") if good else None
+        bad_score = bad.get("score") if bad else None
+        delta = None
+        if good_score is not None and bad_score is not None:
+            delta = round(bad_score - good_score, 4)
+
+        row = {
+            "chunk_id": cid,
+            "source": (good or bad).get("source", ""),
+            "good": {
+                "rank": good.get("rank") if good else None,
+                "score": good_score,
+                "rerank_score": _rerank_score(good),
+                "selected": good.get("selected") if good else None,
+            },
+            "bad": {
+                "rank": bad.get("rank") if bad else None,
+                "score": bad_score,
+                "rerank_score": _rerank_score(bad),
+                "selected": bad.get("selected") if bad else None,
+            },
+            "status": status,
+            "similarity_delta": delta,
+            "replaced_by": replacements.get(cid),
+            "replaces": replaced_by.get(cid),
+        }
+        rows.append(row)
+
+    # Only surface rows that actually changed or participated in a replacement.
+    return [r for r in rows if r["status"] != "unchanged" or r["replaced_by"] or r["replaces"]]
+
+
 def _index_memory_state(events):
     """Best-effort 'final value per key' view derived from the append-only
     memory.write / memory.update / memory.delete log."""
@@ -141,6 +237,52 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
             )
     else:
         sections.append(DiffSection("retrieval", False, []))
+
+    # -- memory chunks (side-by-side chunk diff) --------------------------
+    chunk_rows = _diff_chunks(events_a, events_b)
+    if chunk_rows:
+        sections.append(DiffSection("chunks", True, chunk_rows))
+        for row in chunk_rows:
+            cid = row["chunk_id"]
+            if row["status"] == "added":
+                narrative.append(
+                    f"Chunk '{cid}' (source: {row['source']}) was newly retrieved in the bad run."
+                )
+            elif row["status"] == "removed":
+                narrative.append(
+                    f"Chunk '{cid}' (source: {row['source']}) was retrieved in the good run but is gone in the bad run."
+                )
+            elif row["status"] == "newly_selected":
+                narrative.append(
+                    f"Chunk '{cid}' was newly selected for the final prompt in the bad run."
+                )
+            elif row["status"] == "deselected":
+                narrative.append(
+                    f"Chunk '{cid}' was selected in the good run but dropped in the bad run."
+                )
+            elif row["status"] == "rank_changed":
+                narrative.append(
+                    f"Chunk '{cid}' moved from rank #{row['good']['rank']} to rank #{row['bad']['rank']}."
+                )
+            elif row["status"] == "score_changed":
+                narrative.append(
+                    f"Chunk '{cid}' score changed from {row['good']['score']} to {row['bad']['score']} "
+                    f"(delta {row['similarity_delta']:+})."
+                )
+            # A chunk can change rank/score even when its primary status is
+            # something else (e.g. newly selected AND moved from #7 to #1).
+            if row["status"] not in ("rank_changed", "added", "removed"):
+                g_rank, b_rank = row["good"]["rank"], row["bad"]["rank"]
+                if g_rank is not None and b_rank is not None and g_rank != b_rank:
+                    narrative.append(
+                        f"Chunk '{cid}' also moved from rank #{g_rank} to rank #{b_rank}."
+                    )
+            if row["replaced_by"]:
+                narrative.append(
+                    f"Chunk '{cid}' was replaced by chunk '{row['replaced_by']}' in the final prompt."
+                )
+    else:
+        sections.append(DiffSection("chunks", False, []))
 
     # -- context blocks --------------------------------------------------
     ctx_a = _index_context_blocks(events_a)

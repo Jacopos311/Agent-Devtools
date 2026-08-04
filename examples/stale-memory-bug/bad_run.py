@@ -22,9 +22,11 @@ def retrieve(query):
     This is the bug: same question, worse retrieval."""
     return [
         {"id": "pricing_summary", "content": MEMORY["pricing_summary"],
-         "source": "memory", "score": 0.88, "rank": 1, "selected": True},
+         "source": "memory", "score": 0.88, "rerank_score": 0.72,
+         "rank": 1, "selected": True},
         {"id": "july_pricing_update", "content": DOCS["july_pricing_update"],
-         "source": "doc", "score": 0.60, "rank": 2, "selected": False},
+         "source": "doc", "score": 0.60, "rerank_score": 0.45,
+         "rank": 2, "selected": False},
     ]
 
 
@@ -39,7 +41,15 @@ def run_agent(run_id):
         run.input(USER_QUESTION)
 
         results = retrieve(USER_QUESTION)
-        run.retrieval(query=USER_QUESTION, results=results)
+        run.retrieval(
+            query=USER_QUESTION,
+            results=results,
+            rewritten_query="current Pro plan price",
+            filters={"source": ["doc", "memory"]},
+            embedding_model="text-embedding-3-small",
+            threshold=0.80,
+            rerank_threshold=0.50,
+        )
 
         selected = next(r for r in results if r["selected"])
         run.context_block(source=selected["source"], key=selected["id"],

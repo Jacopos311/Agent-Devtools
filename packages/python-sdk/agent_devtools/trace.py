@@ -56,6 +56,25 @@ class Run:
         """`results` is a list of dicts, e.g.
         {"id": "...", "content": "...", "source": "memory|doc|...",
          "score": 0.83, "rank": 1, "selected": True}
+
+        Optional per-result fields that power the Retrieval Explanation tab:
+
+        - ``rerank_score`` / ``reranker_score``: score from a cross-encoder
+          or other reranker stage.
+        - ``threshold``: per-result similarity threshold (overrides the
+          query-level threshold).
+        - ``rerank_threshold``: per-result reranker threshold.
+        - ``filtered``: True if this chunk was removed by metadata filters.
+        - ``reason``: a custom human-readable reason for selection/rejection.
+
+        Optional query-level metadata (passed via ``**meta``) that is shown
+        in the Retrieval Explanation tab:
+
+        - ``rewritten_query``: the query after query rewriting, if any.
+        - ``filters``: metadata filters applied during retrieval.
+        - ``embedding_model``: the embedding model used for similarity.
+        - ``threshold``: the similarity threshold for selection.
+        - ``rerank_threshold``: the reranker threshold for selection.
         """
         self._log("retrieval.query", {"query": query, **meta})
         self._log("retrieval.result", {"query": query, "results": results})

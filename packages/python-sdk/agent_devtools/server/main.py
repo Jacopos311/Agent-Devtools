@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..store import TraceStore, default_db_path
 from ..diff import diff_runs
+from ..explain import explain_retrieval
 
 app = FastAPI(title="agent-devtools", version="0.1.0")
 
@@ -98,6 +99,16 @@ def get_retrieval(run_id: str):
     store = get_store()
     events = store.get_events_by_types(run_id, ["retrieval.query", "retrieval.result"])
     return {"events": [_event_to_dict(e) for e in events]}
+
+
+@app.get("/api/runs/{run_id}/retrieval/explain")
+def get_retrieval_explain(run_id: str):
+    """Structured retrieval explanations: original/rewritten query, filters,
+    embedding model, similarity & reranker scores, thresholds, and a
+    human-readable reason for each selected/rejected candidate."""
+    store = get_store()
+    events = store.get_events_by_types(run_id, ["retrieval.query", "retrieval.result"])
+    return {"explanations": explain_retrieval(events)}
 
 
 @app.get("/api/runs/{run_id}/memory")
