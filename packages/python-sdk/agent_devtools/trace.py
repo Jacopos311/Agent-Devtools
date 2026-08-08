@@ -13,6 +13,19 @@ wrap the run, and the local debugger has everything on the next request.
         run.tool_call(name="lookup_order", args={"id": 42}, result={"status": "ok"})
         run.memory_write(key="last_price", value="19.99")
         run.output(response_text)
+
+Zero-config quickstart -- the Dashboard server is started and opened in
+your browser automatically as soon as the run block closes:
+
+    with trace.run("quickstart-agent", auto_open=True) as run:
+        run.input("Update my shipping address to Rome")
+        run.memory_write("address", "Milan")  # Bug: incorrect state mutation
+        run.output("Updated your address to Milan!")
+
+Or start / open the debugger explicitly at any point:
+
+    trace.serve()          # start the server (background) + open the browser
+    trace.open_ui()        # open the browser against an already-running server
 """
 
 from __future__ import annotations
@@ -25,6 +38,8 @@ from .redaction import redact
 from .store import TraceStore, default_db_path
 
 _default_store: Optional[TraceStore] = None
+_DEFAULT_HOST = "127.0.0.1"
+_DEFAULT_PORT = 4173
 
 
 def _get_store(db_path: Optional[str] = None) -> TraceStore:
@@ -34,6 +49,39 @@ def _get_store(db_path: Optional[str] = None) -> TraceStore:
     if _default_store is None:
         _default_store = TraceStore(default_db_path())
     return _default_store
+
+
+def _make_debugger(*, db_path: Optional[str] = None, host: str = _DEFAULT_HOST,
+                   port: int = _DEFAULT_PORT):
+    """Lazily build an ``AgentDebugger`` bound to this module's store.
+
+    ``debugger`` imports ``trace`` at module load, so the import happens
+    here, on first use, to avoid a circular import.
+    """
+    from .debugger import AgentDebugger
+
+    return AgentDebugger(db_path=db_path, host=host, port=port,
+                         auto_open_browser=True)
+
+
+def serve(db_path: Optional[str] = None, host: str = _DEFAULT_HOST,
+          port: int = _DEFAULT_PORT, *, open_browser: bool = True) -> None:
+    """Start the local debug server (if not already running) in a background
+    thread and open the Dashboard in the default browser.
+
+    This is the ``trace``-level equivalent of ``AgentDebugger.start()`` --
+    zero-config: no separate ``agent-devtools serve`` step needed.
+    """
+    debugger = _make_debugger(db_path=db_path, host=host, port=port)
+    debugger.start(open_browser=open_browser)
+
+
+def open_ui(db_path: Optional[str] = None, host: str = _DEFAULT_HOST,
+            port: int = _DEFAULT_PORT) -> None:
+    """Open the Dashboard in the default browser, starting the local debug
+    server first if it isn't already running."""
+    debugger = _make_debugger(db_path=db_path, host=host, port=port)
+    debugger.open_ui()
 
 
 class Run:
@@ -142,9 +190,15 @@ class Run:
 
 @contextmanager
 def run(agent_name: str, run_id: Optional[str] = None, db_path: Optional[str] = None,
-        metadata: Optional[dict] = None):
-    """Open a new run. Everything logged inside the `with` block belongs to
-    this run, whether the block succeeds, raises, or ends normally."""
+        metadata: Optional[dict] = None, *, auto_open: bool = False,
+        host: str = _DEFAULT_HOST, port: int = _DEFAULT_PORT):
+    """Open a new run. Everything logged inside the ``with`` block belongs to
+    this run, whether the block succeeds, raises, or ends normally.
+
+    When ``auto_open`` is True, the local debug server is started (and the
+    Dashboard opened in the default browser) as soon as the block closes, so
+    the fresh trace is immediately visible -- no separate ``serve`` step.
+    """
     store = _get_store(db_path)
     run_id = run_id or f"{agent_name}-{uuid.uuid4().hex[:8]}"
     store.create_run(run_id, agent_name, metadata)
@@ -157,3 +211,5 @@ def run(agent_name: str, run_id: Optional[str] = None, db_path: Optional[str] = 
         raise
     finally:
         store.finish_run(run_id, status)
+        if auto_open:
+            serve(db_path=db_path, host=host, port=port)
