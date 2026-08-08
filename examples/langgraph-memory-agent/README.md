@@ -57,7 +57,7 @@ price. Every event from both runs is now in the local trace store.
 
 ```bash
 # 3. Open the debugger
-agent-devtools serve
+python3 -m agent_devtools.cli serve   # or: agent-devtools serve (if the CLI is on your PATH)
 ```
 
 Open `http://127.0.0.1:4173`. That's it — you're debugging.

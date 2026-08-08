@@ -1,7 +1,9 @@
 pyproject.toml
 agent_devtools/__init__.py
 agent_devtools/cli.py
+agent_devtools/debugger.py
 agent_devtools/diff.py
+agent_devtools/explain.py
 agent_devtools/redaction.py
 agent_devtools/store.py
 agent_devtools/trace.py
@@ -11,6 +13,9 @@ agent_devtools.egg-info/dependency_links.txt
 agent_devtools.egg-info/entry_points.txt
 agent_devtools.egg-info/requires.txt
 agent_devtools.egg-info/top_level.txt
+agent_devtools/adapters/__init__.py
+agent_devtools/adapters/groq.py
+agent_devtools/adapters/langchain.py
 agent_devtools/server/__init__.py
 agent_devtools/server/main.py
 agent_devtools/server/static/app.js

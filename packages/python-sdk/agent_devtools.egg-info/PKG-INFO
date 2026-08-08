@@ -1,8 +1,13 @@
 Metadata-Version: 2.4
 Name: agent-devtools
-Version: 0.1.0
+Version: 0.2.0
 Summary: A local-first causal debugger for AI agent runs: instrument a run, then see exactly why it produced the output it did.
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 Requires-Dist: fastapi>=0.110
 Requires-Dist: uvicorn>=0.29
+Provides-Extra: langchain
+Requires-Dist: langchain-core>=0.1.0; extra == "langchain"
+Provides-Extra: groq
+Requires-Dist: langchain-core>=0.1.0; extra == "groq"
+Requires-Dist: langchain-groq>=0.1.0; extra == "groq"

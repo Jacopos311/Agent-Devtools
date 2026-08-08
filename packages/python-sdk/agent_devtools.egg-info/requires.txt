@@ -1,2 +1,9 @@
 fastapi>=0.110
 uvicorn>=0.29
+
+[groq]
+langchain-core>=0.1.0
+langchain-groq>=0.1.0
+
+[langchain]
+langchain-core>=0.1.0
