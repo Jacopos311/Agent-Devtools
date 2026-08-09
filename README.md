@@ -175,16 +175,35 @@ The signature feature. `diff_runs(store, run_a, run_b)` compares a *good* (basel
 
 - **`narrative`**: a plain-language list of what changed ("Chunk 'pricing_summary' was newly selected for the final prompt in the bad run.")
 - **`likely_causes`**: heuristic causal callouts. When a changed context or memory value shows up verbatim (or as a matching numeric token, e.g. a stale price) in the bad run's answer but not the good run's, it is flagged as the likely cause.
-- **`sections`**: structured per-section details for the UI.
+- **`scored_causes`**: the same likely causes, each with a heuristic confidence score (0.0–1.0) so the UI can rank them. Verbatim matches score 1.0; shared salient numeric tokens (e.g. a stale price) score 0.7.
+- **`sections`**: structured per-section details for the UI. The `prompt` section now includes a `token_diff` — a token-level diff of the flattened prompt (system + messages) so you can see exactly which tokens were added, removed, or replaced between runs.
 
 ```python
 from agent_devtools import TraceStore, diff_runs
 
 store = TraceStore()
 result = diff_runs(store, "good-run-1", "bad-run-1")
-for cause in result.likely_causes:
-    print("likely cause:", cause)
+for cause in result.scored_causes:
+    print(f"[{cause['confidence']:.0%}] {cause['message']}")
 ```
+
+### Multi-run comparison
+
+`diff_runs_multi(store, baseline, candidates)` compares a baseline (good) run against multiple candidate (bad) runs and returns:
+
+- **`comparisons`**: one full diff result per candidate
+- **`common_causes`**: likely causes that appear in *every* candidate comparison — the strongest signal that a single root cause explains all the bad runs
+
+```python
+from agent_devtools import TraceStore, diff_runs_multi
+
+store = TraceStore()
+result = diff_runs_multi(store, "good-run-1", ["bad-run-1", "bad-run-2"])
+for cause in result["common_causes"]:
+    print("root cause across all candidates:", cause)
+```
+
+The Diff UI tab supports multi-run comparison: hold ⌘/Ctrl and select multiple bad runs in the "bad" dropdown.
 
 The Diff UI tab renders the result, and the **Diff tab → "Chunks" section** shows a side-by-side table of every retrieved chunk that changed:
 
@@ -358,7 +377,8 @@ The local debug server exposes a small REST API over the same SQLite file the SD
 | GET | `/api/runs/{run_id}/tools` | Tool call/result events |
 | GET | `/api/runs/{run_id}/assertions` | Assertion pass/fail events |
 | GET | `/api/runs/{run_id}/fixture` | Export run as a portable fixture JSON |
-| GET | `/api/diff?a={run_a}&b={run_b}` | Behavior diff: sections, narrative, likely_causes |
+| GET | `/api/diff?a={run_a}&b={run_b}` | Behavior diff: sections, narrative, likely_causes, scored_causes, token_diff |
+| GET | `/api/diff/multi?baseline={run}&candidates={a,b,...}` | Multi-run diff: per-candidate diffs + common root causes |
 
 Example:
 
@@ -445,7 +465,6 @@ Core design principle (from `docs/vision.md`): store raw debug events append-onl
 
 Planned, not yet implemented:
 
-- Smarter causal ranking, prompt token diffing, multi-run comparison
 - Dedicated adapters for LangGraph, OpenAI Agents SDK, CrewAI, LlamaIndex (note: the Atlas *example* uses LangGraph with manual instrumentation — there is no LangGraph adapter module yet)
 - Langfuse / Phoenix trace bridge
 - JS/TS SDK

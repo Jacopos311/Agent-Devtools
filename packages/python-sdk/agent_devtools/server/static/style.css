@@ -723,6 +723,78 @@ table.chunk-diff tbody tr:last-child td { border-bottom: none; }
 
 .scroll-x { overflow-x: auto; }
 
+/* -- confidence badge ---------------------------------------------------- */
+
+.conf-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: 1px;
+  margin-right: 4px;
+}
+.conf-badge.conf-high { color: var(--good); border-color: var(--good-dim); background: rgba(72, 199, 142, 0.1); }
+.conf-badge.conf-mid { color: var(--warn); border-color: #6b551f; background: rgba(242, 184, 75, 0.08); }
+.conf-badge.conf-low { color: var(--text-faint); border-color: var(--border); background: var(--panel-raised); }
+
+/* -- token diff ----------------------------------------------------------- */
+
+.token-diff {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  line-height: 1.8;
+}
+.token-diff-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+.token-diff-body {
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-word;
+}
+.tok-add {
+  background: rgba(72, 199, 142, 0.15);
+  border-bottom: 2px solid var(--good);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.tok-del {
+  background: rgba(255, 122, 104, 0.15);
+  border-bottom: 2px solid var(--bad);
+  padding: 0 2px;
+  border-radius: 2px;
+  text-decoration: line-through;
+}
+.tok-replace {
+  background: rgba(242, 184, 75, 0.15);
+  border-bottom: 2px solid var(--warn);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* -- multi-run diff picker ------------------------------------------------- */
+
+.diff-picker-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 12px;
+}
+
+/* -- state snapshot badge ------------------------------------------------- */
+
+.badge.b-state { color: #9db4ff; border-color: #364073; }
+
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { display: none; }

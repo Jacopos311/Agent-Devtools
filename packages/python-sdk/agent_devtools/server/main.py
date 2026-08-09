@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..store import TraceStore, default_db_path
-from ..diff import diff_runs
+from ..diff import diff_runs, diff_runs_multi
 from ..explain import explain_retrieval
 
 app = FastAPI(title="agent-devtools", version="0.1.0")
@@ -150,6 +150,24 @@ def get_diff(a: str, b: str):
     if store.get_run(b) is None:
         raise HTTPException(404, f"run '{b}' not found")
     return diff_runs(store, a, b).to_dict()
+
+
+@app.get("/api/diff/multi")
+def get_diff_multi(baseline: str, candidates: str):
+    """Compare a baseline (good) run against multiple candidate (bad) runs.
+
+    ``candidates`` is a comma-separated list of run ids. Returns the
+    per-candidate diffs plus the causes that are common to *every*
+    candidate -- the strongest signal of a shared root cause.
+    """
+    store = get_store()
+    if store.get_run(baseline) is None:
+        raise HTTPException(404, f"run '{baseline}' not found")
+    cand_ids = [c.strip() for c in candidates.split(",") if c.strip()]
+    missing = [c for c in cand_ids if store.get_run(c) is None]
+    if missing:
+        raise HTTPException(404, f"run(s) not found: {', '.join(missing)}")
+    return diff_runs_multi(store, baseline, cand_ids)
 
 
 # Static DevTools UI. Mounted last so /api/* above always wins routing.

@@ -14,6 +14,8 @@ diff two JSON blobs by eye.
 
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -26,6 +28,59 @@ def _text(value: Any) -> str:
     if isinstance(value, str):
         return value
     return str(value)
+
+
+def _tokenize(text: str) -> list[str]:
+    """Split text into tokens (words + whitespace) for diffing."""
+    return re.findall(r"\S+|\s+", text or "")
+
+
+def _diff_tokens(text_a: str, text_b: str) -> dict:
+    """Compute a token-level diff between two texts.
+
+    Returns a dict with ``ops`` (a list of added/removed/replaced spans),
+    plus counts of changed tokens. This is what powers the "what exactly
+    changed in the prompt" view in the Diff tab.
+    """
+    tokens_a = _tokenize(text_a)
+    tokens_b = _tokenize(text_b)
+    matcher = difflib.SequenceMatcher(None, tokens_a, tokens_b)
+    ops = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        removed = "".join(tokens_a[i1:i2])
+        added = "".join(tokens_b[j1:j2])
+        ops.append({
+            "tag": tag,
+            "removed": removed,
+            "added": added,
+        })
+    return {
+        "ops": ops,
+        "removed_count": sum(1 for op in ops if op["removed"]),
+        "added_count": sum(1 for op in ops if op["added"]),
+    }
+
+
+def _prompt_to_text(system: Optional[str], messages: Optional[list]) -> str:
+    """Flatten a prompt (system + messages) into a single text for diffing."""
+    parts = []
+    if system:
+        parts.append(f"system: {system}")
+    for m in messages or []:
+        if isinstance(m, dict):
+            role = m.get("role", "message")
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    str(c.get("text", c)) if isinstance(c, dict) else str(c)
+                    for c in content
+                )
+            parts.append(f"{role}: {content}")
+        else:
+            parts.append(f"message: {m}")
+    return "\n".join(parts)
 
 
 def _latest(events, event_type):
@@ -180,6 +235,7 @@ class RunDiffResult:
     sections: list
     narrative: list
     likely_causes: list
+    scored_causes: list = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -190,7 +246,37 @@ class RunDiffResult:
             ],
             "narrative": self.narrative,
             "likely_causes": self.likely_causes,
+            "scored_causes": self.scored_causes,
         }
+
+
+def diff_runs_multi(store: TraceStore, baseline: str, candidates: list[str]) -> dict:
+    """Compare a baseline (good) run against multiple candidate (bad) runs.
+
+    Returns a dict with:
+      - ``baseline``: the baseline run id
+      - ``comparisons``: one ``RunDiffResult.to_dict()`` per candidate
+      - ``common_causes``: likely causes that appear in *every* candidate
+        comparison (the strongest signal that a single root cause explains
+        all the bad runs)
+    """
+    comparisons = []
+    common_causes: list[str] = []
+    for candidate in candidates:
+        if candidate == baseline:
+            continue
+        result = diff_runs(store, baseline, candidate)
+        comparisons.append(result.to_dict())
+        if not common_causes:
+            common_causes = list(result.likely_causes)
+        else:
+            common_causes = [c for c in common_causes if c in result.likely_causes]
+    return {
+        "baseline": baseline,
+        "candidates": [c for c in candidates if c != baseline],
+        "comparisons": comparisons,
+        "common_causes": common_causes,
+    }
 
 
 def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
@@ -332,14 +418,25 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
         msgs_a, msgs_b = prompt_a.payload.get("messages"), prompt_b.payload.get("messages")
         prompt_changed = (sys_a != sys_b) or (msgs_a != msgs_b)
         if prompt_changed:
+            # Token-level diff of the flattened prompt so the UI can show
+            # exactly which tokens were added/removed/replaced.
+            text_a = _prompt_to_text(sys_a, msgs_a)
+            text_b = _prompt_to_text(sys_b, msgs_b)
+            token_diff = _diff_tokens(text_a, text_b)
             sections.append(DiffSection("prompt", True, [{
                 "good_system": sys_a, "bad_system": sys_b,
                 "good_messages": msgs_a, "bad_messages": msgs_b,
+                "token_diff": token_diff,
             }]))
             if sys_a != sys_b:
                 narrative.append("The system prompt differed between runs.")
             if msgs_a != msgs_b:
                 narrative.append("The final assembled messages sent to the model differed between runs.")
+            if token_diff["removed_count"] or token_diff["added_count"]:
+                narrative.append(
+                    f"The prompt changed by {token_diff['removed_count']} removed and "
+                    f"{token_diff['added_count']} added token span(s)."
+                )
         else:
             sections.append(DiffSection("prompt", False, []))
     else:
@@ -390,8 +487,8 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
     # -- heuristic causal linking ------------------------------------
     # If a stale/removed/changed context or memory value shows up verbatim
     # in the bad run's answer, call it out as a likely cause rather than
-    # just another line item.
-    import re
+    # just another line item. Each cause also gets a confidence score
+    # (0.0 - 1.0) so the UI can rank them.
     _numeric_token = re.compile(r"\$?\d[\d,.]*%?")
 
     def _salient_tokens(text: str) -> set:
@@ -414,37 +511,70 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
         shared = _salient_tokens(needle) & _salient_tokens(haystack)
         return bool(shared)
 
+    def _mention_strength(haystack: str, needle: str) -> float:
+        """Confidence that `needle`'s content leaked into `haystack`.
+
+        Returns 1.0 for a verbatim literal match, 0.7 for a shared salient
+        numeric token, 0.0 otherwise.
+        """
+        needle = (needle or "").strip()
+        if not needle:
+            return 0.0
+        if len(needle) > 6 and needle.lower() in (haystack or "").lower():
+            return 1.0
+        shared = _salient_tokens(needle) & _salient_tokens(haystack)
+        return 0.7 if shared else 0.0
+
+    scored_causes: list[dict] = []
+
+    def _add_cause(message: str, confidence: float) -> None:
+        likely_causes.append(message)
+        scored_causes.append({
+            "message": message,
+            "confidence": round(confidence, 2),
+        })
+
     if text_b:
         for cv in ctx_changed_value:
             bad_val = _text(cv.get("bad_content"))
             if _mentions(text_b, bad_val) and not _mentions(text_a, bad_val):
-                likely_causes.append(
+                _add_cause(
                     f"The bad run's answer repeats content from context block '{cv['key']}' "
-                    f"that differed from the good run -- this is likely the cause."
+                    f"that differed from the good run -- this is likely the cause.",
+                    _mention_strength(text_b, bad_val),
                 )
         for k in ctx_added:
             bad_val = _text(ctx_b[k].get("content"))
             if _mentions(text_b, bad_val) and not _mentions(text_a, bad_val):
-                likely_causes.append(
+                _add_cause(
                     f"The bad run's answer repeats content from context block '{k}' "
                     f"(source: {ctx_b[k].get('source')}), which only appeared in the bad run "
-                    f"-- this is likely the cause."
+                    f"-- this is likely the cause.",
+                    _mention_strength(text_b, bad_val),
                 )
         for k in ctx_removed:
             good_val = _text(ctx_a[k].get("content"))
             if _mentions(text_a, good_val) and not _mentions(text_b, good_val):
-                likely_causes.append(
+                _add_cause(
                     f"Context block '{k}' (source: {ctx_a[k].get('source')}) grounded the good "
-                    f"run's answer but was missing from the bad run's prompt."
+                    f"run's answer but was missing from the bad run's prompt.",
+                    _mention_strength(text_a, good_val),
                 )
         for k in mem_diff_keys:
             bad_val = _text(mem_b.get(k))
             if _mentions(text_b, bad_val) and not _mentions(text_a, bad_val):
-                likely_causes.append(
+                _add_cause(
                     f"The bad run's answer repeats memory value '{k}' = '{bad_val}', "
-                    f"which differed from the good run -- this is likely the cause."
+                    f"which differed from the good run -- this is likely the cause.",
+                    _mention_strength(text_b, bad_val),
                 )
+
+    # Sort scored causes by confidence (highest first) so the UI can
+    # present the most likely explanation first.
+    scored_causes.sort(key=lambda c: c["confidence"], reverse=True)
+
     return RunDiffResult(
         run_a=run_a, run_b=run_b, sections=sections,
         narrative=narrative, likely_causes=likely_causes,
+        scored_causes=scored_causes,
     )

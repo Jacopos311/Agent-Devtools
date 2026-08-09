@@ -538,6 +538,32 @@ async function renderTools() {
 /* Diff tab -- the signature feature                                       */
 /* -------------------------------------------------------------------- */
 
+function confidenceBadge(conf) {
+  // conf is 0.0 - 1.0
+  const pct = Math.round((conf || 0) * 100);
+  const cls = pct >= 80 ? "conf-high" : pct >= 50 ? "conf-mid" : "conf-low";
+  return `<span class="conf-badge ${cls}" title="Heuristic confidence">${pct}%</span>`;
+}
+
+function renderTokenDiff(tokenDiff) {
+  if (!tokenDiff || !tokenDiff.ops || !tokenDiff.ops.length) return "";
+  const ops = tokenDiff.ops
+    .map((op) => {
+      if (op.added && !op.removed) {
+        return `<span class="tok-add">${escapeHtml(op.added)}</span>`;
+      }
+      if (op.removed && !op.added) {
+        return `<span class="tok-del">${escapeHtml(op.removed)}</span>`;
+      }
+      return `<span class="tok-replace">${escapeHtml(op.removed)} &rarr; ${escapeHtml(op.added)}</span>`;
+    })
+    .join(" ");
+  return `<div class="token-diff">
+    <div class="token-diff-title">Token-level prompt diff (${tokenDiff.removed_count} removed, ${tokenDiff.added_count} added spans)</div>
+    <div class="token-diff-body">${ops}</div>
+  </div>`;
+}
+
 async function renderDiff() {
   const content = document.getElementById("content");
 
@@ -557,6 +583,12 @@ async function renderDiff() {
       .map((r) => `<option value="${escapeHtml(r.id)}" ${r.id === selectedId ? "selected" : ""}>${escapeHtml(r.id)}</option>`)
       .join("");
 
+  // Multi-select for the "bad" side when comparing against multiple runs.
+  const badOptions = state.runs
+    .filter((r) => r.id !== state.diffA)
+    .map((r) => `<option value="${escapeHtml(r.id)}" ${(state.diffB || "").split(",").includes(r.id) ? "selected" : ""}>${escapeHtml(r.id)}</option>`)
+    .join("");
+
   content.innerHTML = `
     <div class="panel-title">Behavior diff</div>
     <div class="diff-picker">
@@ -564,14 +596,16 @@ async function renderDiff() {
       <select id="diff-a">${optionsFor(state.diffA)}</select>
       <span class="diff-arrow">vs</span>
       <span class="diff-col-head bad" style="border:none;padding:0;">bad</span>
-      <select id="diff-b">${optionsFor(state.diffB)}</select>
+      <select id="diff-b" multiple size="4">${badOptions}</select>
       <button class="diff-run-btn" id="diff-run-btn">Compare</button>
     </div>
+    <div class="diff-picker-hint">Hold ⌘/Ctrl to select multiple bad runs for a multi-run comparison.</div>
     <div id="diff-result"></div>`;
 
   document.getElementById("diff-run-btn").addEventListener("click", async () => {
     state.diffA = document.getElementById("diff-a").value;
-    state.diffB = document.getElementById("diff-b").value;
+    const sel = Array.from(document.getElementById("diff-b").selectedOptions).map((o) => o.value);
+    state.diffB = sel.join(",");
     await runDiffCompare();
   });
 
@@ -584,14 +618,26 @@ async function runDiffCompare() {
   const resultEl = document.getElementById("diff-result");
   if (!resultEl) return;
   if (!state.diffA || !state.diffB) return;
-  if (state.diffA === state.diffB) {
-    resultEl.innerHTML = emptyHint("Pick two different runs to compare.");
+
+  const badList = state.diffB.split(",").filter(Boolean);
+  if (!badList.length) {
+    resultEl.innerHTML = emptyHint("Pick at least one bad run to compare.");
     return;
   }
+  if (badList.length === 1 && badList[0] === state.diffA) {
+    resultEl.innerHTML = emptyHint("Pick different runs to compare.");
+    return;
+  }
+
   resultEl.innerHTML = emptyHint("Comparing\u2026");
   try {
-    const data = await api(`/diff?a=${encodeURIComponent(state.diffA)}&b=${encodeURIComponent(state.diffB)}`);
-    resultEl.innerHTML = renderDiffResult(data);
+    if (badList.length === 1) {
+      const data = await api(`/diff?a=${encodeURIComponent(state.diffA)}&b=${encodeURIComponent(badList[0])}`);
+      resultEl.innerHTML = renderDiffResult(data);
+    } else {
+      const data = await api(`/diff/multi?baseline=${encodeURIComponent(state.diffA)}&candidates=${encodeURIComponent(badList.join(","))}`);
+      resultEl.innerHTML = renderDiffMultiResult(data);
+    }
   } catch (err) {
     resultEl.innerHTML = emptyStateHtml("Couldn't compute diff", escapeHtml(err.message));
   }
@@ -600,7 +646,14 @@ async function runDiffCompare() {
 function renderDiffResult(data) {
   let html = "";
 
-  if (data.likely_causes.length) {
+  if (data.scored_causes && data.scored_causes.length) {
+    html += `<div class="causes">
+      <div class="causes-title">Likely cause${data.scored_causes.length > 1 ? "s" : ""} (ranked)</div>
+      <ul>${data.scored_causes
+        .map((c) => `<li>${confidenceBadge(c.confidence)} ${escapeHtml(c.message)}</li>`)
+        .join("")}</ul>
+    </div>`;
+  } else if (data.likely_causes && data.likely_causes.length) {
     html += `<div class="causes">
       <div class="causes-title">Likely cause${data.likely_causes.length > 1 ? "s" : ""}</div>
       <ul>${data.likely_causes.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>
@@ -622,6 +675,26 @@ function renderDiffResult(data) {
     section.details.forEach((d) => {
       html += renderDiffDetail(section.name, d);
     });
+  });
+
+  return html;
+}
+
+function renderDiffMultiResult(data) {
+  let html = `<div class="panel-title">Multi-run diff &middot; baseline ${escapeHtml(data.baseline)} vs ${data.candidates.length} candidate(s)</div>`;
+
+  if (data.common_causes && data.common_causes.length) {
+    html += `<div class="causes">
+      <div class="causes-title">Root cause across all candidates</div>
+      <ul>${data.common_causes.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>
+    </div>`;
+  } else {
+    html += emptyHint("No single cause is common across every candidate run.");
+  }
+
+  data.comparisons.forEach((comp) => {
+    html += `<div class="diff-section-title">vs ${escapeHtml(comp.run_b)}</div>`;
+    html += renderDiffResult(comp);
   });
 
   return html;
@@ -657,7 +730,7 @@ function renderDiffDetail(name, d) {
                 .join(" ")}</div>`
             : ""
         }
-        ${d.rank_changes
+        ${(d.rank_changes || [])
           .map((rc) => `<div>${escapeHtml(rc.item)}: rank #${rc.good_rank} &rarr; #${rc.bad_rank}</div>`)
           .join("")}
       </div>`;
@@ -665,23 +738,23 @@ function renderDiffDetail(name, d) {
     case "context":
       return `<div class="card kv">
         ${
-          d.missing_in_bad_run.length
+          (d.missing_in_bad_run || []).length
             ? `<div style="margin-bottom:4px;"><span class="k">not injected in bad run:</span> ${d.missing_in_bad_run
                 .map((x) => `<span class="badge b-context">${escapeHtml(x)}</span>`)
                 .join(" ")}</div>`
             : ""
         }
         ${
-          d.added_in_bad_run.length
+          (d.added_in_bad_run || []).length
             ? `<div style="margin-bottom:4px;"><span class="k">only injected in bad run:</span> ${d.added_in_bad_run
                 .map((x) => `<span class="badge b-context">${escapeHtml(x)}</span>`)
                 .join(" ")}</div>`
             : ""
         }
-        ${d.reordered
+        ${(d.reordered || [])
           .map((rc) => `<div>${escapeHtml(rc.key)}: position ${rc.good_position} &rarr; ${rc.bad_position}</div>`)
           .join("")}
-        ${d.value_changed
+        ${(d.value_changed || [])
           .map(
             (cv) => `<div class="diff-braid" style="margin-top:6px;">
               <div class="diff-cell changed good-side">${escapeHtml(cv.key)}: ${escapeHtml(cv.good_content)}</div>
@@ -692,7 +765,8 @@ function renderDiffDetail(name, d) {
       </div>`;
 
     case "prompt": {
-      let out = `<div class="diff-braid">
+      let out = renderTokenDiff(d.token_diff);
+      out += `<div class="diff-braid">
         <div class="diff-cell ${d.good_system !== d.bad_system ? "changed" : ""} good-side">${escapeHtml(
         d.good_system || "(none)"
       )}</div>
