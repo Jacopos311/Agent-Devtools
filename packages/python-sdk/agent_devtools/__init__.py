@@ -42,8 +42,10 @@ from . import trace  # noqa: F401
 from .trace import open_ui, serve  # noqa: F401
 from . import explain  # noqa: F401
 from .store import TraceStore, default_db_path  # noqa: F401
-from .diff import diff_runs, diff_runs_multi  # noqa: F401
+from .diff import diff_runs, diff_runs_multi, build_evidence_chain  # noqa: F401
 from .replay import ReplayEngine, ReplayReport  # noqa: F401
+from .memory_view import memory_view  # noqa: F401
+from .scope import detect_scope_mismatches, scope_from_metadata  # noqa: F401
 from .adapters import LangChainTraceHandler  # noqa: F401
 from .adapters.groq import TracedGroq, create_groq_llm, wrap_groq  # noqa: F401
 from .debugger import AgentDebugger  # noqa: F401
@@ -56,6 +58,10 @@ __all__ = [
     "default_db_path",
     "diff_runs",
     "diff_runs_multi",
+    "build_evidence_chain",
+    "memory_view",
+    "detect_scope_mismatches",
+    "scope_from_metadata",
     "ReplayEngine",
     "ReplayReport",
     "LangChainTraceHandler",
@@ -67,4 +73,4 @@ __all__ = [
     "serve",
     "open_ui",
 ]
-__version__ = "0.2.0"
+__version__ = "0.3.0"

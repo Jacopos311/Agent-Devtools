@@ -41,6 +41,13 @@ def _diff_tokens(text_a: str, text_b: str) -> dict:
     Returns a dict with ``ops`` (a list of added/removed/replaced spans),
     plus counts of changed tokens. This is what powers the "what exactly
     changed in the prompt" view in the Diff tab.
+
+    NOTE: without an exact model tokenizer, the "tokens" here are a
+    word+whitespace *estimate*, never an exact model token count. The
+    ``estimate`` flag and an ``estimated_counts`` sub-dict make that explicit
+    so the UI never presents an estimate as a real token count. When a trace
+    records exact token counts (see ``_recorded_token_counts``), those are
+    surfaced separately.
     """
     tokens_a = _tokenize(text_a)
     tokens_b = _tokenize(text_b)
@@ -60,7 +67,50 @@ def _diff_tokens(text_a: str, text_b: str) -> dict:
         "ops": ops,
         "removed_count": sum(1 for op in ops if op["removed"]),
         "added_count": sum(1 for op in ops if op["added"]),
+        # Explicit: this is an estimate, not an exact tokenizer count.
+        "estimate": True,
+        "method": "word+whitespace split estimate (not an exact model tokenizer)",
+        "estimated_counts": {
+            "a_total_tokens": len(tokens_a),
+            "b_total_tokens": len(tokens_b),
+            "a_chars": len(text_a or ""),
+            "b_chars": len(text_b or ""),
+        },
     }
+
+
+def _recorded_token_counts(prompt_payload: Optional[dict]) -> Optional[dict]:
+    """Exact prompt token counts when the trace actually recorded them.
+
+    Reads the optional ``usage`` / ``token_count`` / ``tokens`` payload keys
+    and normalizes to ``{prompt_tokens, total_tokens}``. Returns None when no
+    exact counts were recorded (never estimates here).
+    """
+    if not prompt_payload:
+        return None
+    usage = prompt_payload.get("usage") or {}
+    if isinstance(usage, dict):
+        prompt_tokens = usage.get("prompt_tokens")
+        total = usage.get("total_tokens")
+        if prompt_tokens is not None or total is not None:
+            return {
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": total if total is not None else prompt_tokens,
+                "exact": True,
+                "source": "usage",
+            }
+    tc = prompt_payload.get("token_count")
+    if isinstance(tc, dict):
+        pt = tc.get("prompt_tokens")
+        if pt is not None:
+            return {"prompt_tokens": pt, "total_tokens": pt, "exact": True,
+                    "source": "token_count"}
+    t = prompt_payload.get("tokens")
+    if isinstance(t, (int, float)) and not isinstance(t, bool):
+        return {"prompt_tokens": t, "total_tokens": t, "exact": True,
+                "source": "tokens"}
+    return None
+
 
 
 def _prompt_to_text(system: Optional[str], messages: Optional[list]) -> str:
@@ -221,6 +271,196 @@ def _index_memory_state(events):
     return state
 
 
+# ---------------------------------------------------------------------------
+# Causal evidence chains (Phase 7)
+# ---------------------------------------------------------------------------
+# For a single changed memory/context value we walk the bad run's event log
+# and trace it through the pipeline: memory -> retrieved -> selected ->
+# inserted into context -> in the final prompt -> reflected in the output.
+# Each step is *evidence-labeled* (backed by an actual recorded event); a step
+# with no supporting event is marked "not reached". This shows *where* a
+# change entered execution and whether it actually reached the final prompt and
+# output -- without ever claiming token-level attribution.
+
+
+def _text_of(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _values_equal(a: Any, b: Any) -> bool:
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    try:
+        if isinstance(a, bool) or isinstance(b, bool):
+            return a == b
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return a == b
+
+
+def _chain_memory_step(events, key, value):
+    """Any memory event for this key that carries this value? Returns a step."""
+    for e in events:
+        p = e.payload or {}
+        if p.get("key") != key:
+            continue
+        val = p.get("value", p.get("new_value"))
+        if _values_equal(val, value):
+            op = e.type.replace("memory.", "")
+            return {
+                "stage": "memory",
+                "status": "reached",
+                "seq": e.seq,
+                "detail": f"memory.{op} set '{key}' to {_text_of(value)!r}",
+            }
+    return None
+
+
+def _chain_retrieval_step(events, value):
+    """Did this value surface in a retrieval.result? Returns a step or None."""
+    for e in events:
+        if e.type != "retrieval.result":
+            continue
+        for r in e.payload.get("results", []):
+            if _values_equal(r.get("content") or r.get("id"), value):
+                sel = r.get("selected")
+                return {
+                    "stage": "retrieval",
+                    "status": "reached",
+                    "seq": e.seq,
+                    "detail": (
+                        f"surfaced as chunk '{r.get('id') or r.get('content')}'"
+                        f" (score {r.get('score')}, rank {r.get('rank')}, "
+                        f"selected={sel})"
+                    ),
+                    "selected": sel,
+                }
+    return None
+
+
+def _chain_context_step(events, key, value):
+    """Was this value injected as a context.block? Returns a step or None."""
+    for e in events:
+        if e.type != "context.block":
+            continue
+        p = e.payload or {}
+        if (p.get("key") and _values_equal(p.get("key"), key)) or _values_equal(
+            p.get("content"), value
+        ):
+            return {
+                "stage": "context",
+                "status": "reached",
+                "seq": e.seq,
+                "detail": (
+                    f"injected as context block '{p.get('key') or p.get('source')}'"
+                    f" (order {p.get('order')}, source {p.get('source')})"
+                ),
+            }
+    return None
+
+
+def _chain_prompt_step(events, key, value):
+    """Does the final assembled prompt reference this key/value? Returns a step."""
+    prompt = _latest(events, "prompt.assembled")
+    if not prompt:
+        return None
+    p = prompt.payload or {}
+    ctx = p.get("context") or []
+    if key in ctx:
+        return {
+            "stage": "final_prompt",
+            "status": "reached",
+            "seq": prompt.seq,
+            "detail": f"chunk '{key}' is in the final prompt context list",
+        }
+    text = _prompt_to_text(p.get("system"), p.get("messages"))
+    if _text_of(value) and _text_of(value).lower() in text.lower():
+        return {
+            "stage": "final_prompt",
+            "status": "reached",
+            "seq": prompt.seq,
+            "detail": "value appears in the assembled prompt text",
+        }
+    return None
+
+
+def _chain_output_step(events, value):
+    """Does the final output mention this value? Returns a step."""
+    for e in events:
+        if e.type != "model.response":
+            continue
+        text = _text_of((e.payload or {}).get("response"))
+        if _text_of(value) and _text_of(value).lower() in text.lower():
+            return {
+                "stage": "output",
+                "status": "reached",
+                "seq": e.seq,
+                "detail": "final answer repeats this value",
+            }
+    return None
+
+
+def build_evidence_chain(events, kind, key, value):
+    """Trace one changed memory/context value through the bad run pipeline.
+
+    ``kind`` is ``"memory"`` or ``"context"``. Returns a dict with ``steps``,
+    ``broken_at`` (first stage from the entry point on without evidence, or
+    None), and a note distinguishing event-level evidence from output
+    correlation.
+
+    A *memory* cause starts at the ``memory`` stage; a *context* cause enters
+    via retrieval, so the leading ``memory`` stage is marked ``skipped`` (dim)
+    rather than "broken" -- it was never part of this cause's path.
+    """
+    entry_index = 1 if kind == "context" else 0
+    stage_fns = (
+        ("memory", _chain_memory_step(events, key, value)),
+        ("retrieved", _chain_retrieval_step(events, value)),
+        ("selected_into_context", _chain_context_step(events, key, value)),
+        ("final_prompt", _chain_prompt_step(events, key, value)),
+        ("output", _chain_output_step(events, value)),
+    )
+
+    steps = []
+    for i, (stage, fn_result) in enumerate(stage_fns):
+        if i < entry_index:
+            steps.append({
+                "stage": stage,
+                "status": "skipped",
+                "seq": None,
+                "detail": f"not part of this {kind}-origin cause's path",
+            })
+        elif fn_result is not None:
+            steps.append({**fn_result, "stage": stage})
+        else:
+            steps.append({
+                "stage": stage,
+                "status": "not_reached",
+                "seq": None,
+                "detail": f"no recorded event links this to {stage}",
+            })
+
+    path = steps[entry_index:]
+    broken_at = next(
+        (s["stage"] for s in path if s["status"] == "not_reached"), None
+    )
+    return {
+        "kind": kind,
+        "key": key,
+        "value": value,
+        "steps": steps,
+        "broken_at": broken_at,
+        "caveat": (
+            "Event-level and context-level evidence plus output correlation "
+            "only -- true token-level attribution is not available."
+        ),
+    }
+
+
+
+
 @dataclass
 class DiffSection:
     name: str
@@ -236,6 +476,7 @@ class RunDiffResult:
     narrative: list
     likely_causes: list
     scored_causes: list = field(default_factory=list)
+    evidence_chains: list = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -247,6 +488,7 @@ class RunDiffResult:
             "narrative": self.narrative,
             "likely_causes": self.likely_causes,
             "scored_causes": self.scored_causes,
+            "evidence_chains": self.evidence_chains,
         }
 
 
@@ -419,14 +661,29 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
         prompt_changed = (sys_a != sys_b) or (msgs_a != msgs_b)
         if prompt_changed:
             # Token-level diff of the flattened prompt so the UI can show
-            # exactly which tokens were added/removed/replaced.
+            # exactly which tokens were added/removed/replaced. This is an
+            # *estimate* unless exact token counts were recorded.
             text_a = _prompt_to_text(sys_a, msgs_a)
             text_b = _prompt_to_text(sys_b, msgs_b)
             token_diff = _diff_tokens(text_a, text_b)
+            recorded_counts = {
+                "good": _recorded_token_counts(prompt_a.payload),
+                "bad": _recorded_token_counts(prompt_b.payload),
+            }
             sections.append(DiffSection("prompt", True, [{
                 "good_system": sys_a, "bad_system": sys_b,
                 "good_messages": msgs_a, "bad_messages": msgs_b,
                 "token_diff": token_diff,
+                "token_counts": {
+                    "estimate": True,
+                    "prompt_tokens_a": token_diff["estimated_counts"]["a_total_tokens"],
+                    "prompt_tokens_b": token_diff["estimated_counts"]["b_total_tokens"],
+                    "delta": (
+                        token_diff["estimated_counts"]["b_total_tokens"]
+                        - token_diff["estimated_counts"]["a_total_tokens"]
+                    ),
+                    "recorded": recorded_counts,
+                },
             }]))
             if sys_a != sys_b:
                 narrative.append("The system prompt differed between runs.")
@@ -571,10 +828,49 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
 
     # Sort scored causes by confidence (highest first) so the UI can
     # present the most likely explanation first.
-    scored_causes.sort(key=lambda c: c["confidence"], reverse=True)
+        scored_causes.sort(key=lambda c: c["confidence"], reverse=True)
+
+    # Causal evidence chains (Phase 7): for each changed memory value / context
+    # block / retrieved chunk, trace the *bad* run through memory -> retrieved ->
+    # selected -> context -> final prompt -> output, with evidence labels.
+    # Memory/context cause values come from the diff; chunk chains resolve the
+    # chunk's content from the bad run's retrieval log (best-effort).
+    evidence_chains = []
+
+    def _content_of(events, chunk_id):
+        for e in events:
+            if e.type != "retrieval.result":
+                continue
+            for r in e.payload.get("results", []):
+                if _values_equal(r.get("id"), chunk_id):
+                    return r.get("content")
+        return chunk_id
+
+    for k in mem_diff_keys:
+        evidence_chains.append(
+            build_evidence_chain(events_b, "memory", k, _text(mem_b.get(k)))
+        )
+    for cv in ctx_changed_value:
+        evidence_chains.append(
+            build_evidence_chain(
+                events_b, "context", cv.get("key"), _text(cv.get("bad_content"))
+            )
+        )
+    for k in ctx_added:
+        evidence_chains.append(
+            build_evidence_chain(
+                events_b, "context", k, _text(ctx_b[k].get("content"))
+            )
+        )
+    for row in chunk_rows:
+        if row["status"] in ("added", "newly_selected", "rank_changed", "score_changed"):
+            cid = row["chunk_id"]
+            evidence_chains.append(
+                build_evidence_chain(events_b, "retrieval", cid, _text(_content_of(events_b, cid)))
+            )
 
     return RunDiffResult(
         run_a=run_a, run_b=run_b, sections=sections,
         narrative=narrative, likely_causes=likely_causes,
-        scored_causes=scored_causes,
+        scored_causes=scored_causes, evidence_chains=evidence_chains,
     )

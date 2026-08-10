@@ -645,26 +645,45 @@ function renderRetrievalMeta(exp) {
   return rows.join("");
 }
 
+const OUTCOME_META = {
+  selected: { label: "selected", cls: "selected" },
+  rejected_threshold: { label: "below threshold", cls: "rejected" },
+  rejected_reranker: { label: "reranker rejected", cls: "rejected" },
+  rejected_filter: { label: "filtered", cls: "rejected" },
+  rejected_permission: { label: "DENIED", cls: "denied" },
+  no_match: { label: "no match", cls: "rejected" },
+  rejected_reason: { label: "rejected", cls: "rejected" },
+  unknown: { label: "—", cls: "unknown" },
+};
+
+function outcomeBadge(outcome) {
+  const m = OUTCOME_META[outcome] || OUTCOME_META.unknown;
+  return `<span class="retr-state ${m.cls}">${m.label}</span>`;
+}
+
 function renderRetrievalResultRow(r) {
   const selected = r.selected === true;
   const rejected = r.selected === false;
   const stateBadge = selected
-    ? `<span class="retr-state selected">\u2713 selected</span>`
+    ? `<span class="retr-state selected">✓ selected</span>`
     : rejected
-    ? `<span class="retr-state rejected">\u2717 rejected</span>`
-    : `<span class="retr-state unknown">\u2014</span>`;
+    ? `<span class="retr-state rejected">✗ rejected</span>`
+    : `<span class="retr-state unknown">—</span>`;
+  const reason = r.reason || "";
+  const isDenied = r.outcome === "rejected_permission";
   return `
-    <tr class="${selected ? "selected" : ""}">
+    <tr class="${selected ? "selected" : ""} ${isDenied ? "denied-row" : ""}">
       <td><span class="rank-pill">#${r.rank ?? "-"}</span></td>
       <td class="mono">${escapeHtml(r.id || "")}</td>
       <td>${escapeHtml(r.source || "")}</td>
       <td class="mono">${fmtScore(r.score)}</td>
       <td class="mono">${fmtScore(r.rerank_score)}</td>
       <td class="mono">${fmtScore(r.threshold)}</td>
-      <td>${stateBadge}</td>
-      <td class="retr-reason">${escapeHtml(r.reason || "")}</td>
+      <td>${outcomeBadge(r.outcome)}</td>
+      <td class="retr-reason">${escapeHtml(reason)}</td>
     </tr>`;
 }
+
 
 async function renderRetrieval() {
   const content = document.getElementById("content");
@@ -704,10 +723,89 @@ async function renderRetrieval() {
 /* Memory tab                                                             */
 /* -------------------------------------------------------------------- */
 
+const MEMORY_STATUS_META = {
+  stale_after_run: { label: "STALE AFTER RUN", cls: "early" },
+  deleted_after_run: { label: "DELETED AFTER RUN", cls: "warn" },
+  consistent: { label: "consistent", cls: "ok" },
+  observed_only: { label: "observed at decision time only", cls: "info" },
+  write_only: { label: "written, never read", cls: "info" },
+  history_only: { label: "no value recorded", cls: "info" },
+};
+
+function memoryStatusBadge(status) {
+  const m = MEMORY_STATUS_META[status];
+  if (!m) return "";
+  return `<span class="mem-status ${m.cls}">${m.label}</span>`;
+}
+
+function fmtStamp(ts) {
+  if (ts === null || ts === undefined) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], { hour12: false });
+}
+
+function renderMemoryViewItem(key, v) {
+  const observed = v.observed;
+  const current = v.current;
+  let observedCell = '<span class="k">At decision time:</span> <span class="mem-na">historical state unavailable</span>';
+  if (observed && observed.value !== undefined) {
+    observedCell = `<span class="k">At decision time:</span> <span class="mono">${escapeHtml(jsonInline(observed.value))}</span>${
+      observed.observed_at ? `<span class="mem-ts">@ ${fmtStamp(observed.observed_at)}</span>` : ""
+    }${observed.version !== undefined ? `<span class="mem-ver">v${escapeHtml(observed.version)}</span>` : ""}`;
+  }
+  let currentCell = '<span class="k">Current:</span> <span class="mem-na">not recorded in this run</span>';
+  if (current && current.value !== undefined) {
+    currentCell = `<span class="k">Current:</span> <span class="mono">${escapeHtml(jsonInline(current.value))}</span>${
+      current.updated_at ? `<span class="mem-ts">@ ${fmtStamp(current.updated_at)}</span>` : ""
+    }${current.version !== undefined ? `<span class="mem-ver">v${escapeHtml(current.version)}</span>` : ""}`;
+  } else if (current && current.deleted_at) {
+    currentCell = `<span class="k">Current:</span> <span class="mem-na">deleted @ ${fmtStamp(current.deleted_at)}</span>`;
+  }
+  const notes = (v.notes || []).map((n) => `<div class="mem-note">&#8226; ${escapeHtml(n)}</div>`).join("");
+  return `
+    <div class="card mem-view-card ${v.status === "stale_after_run" ? "mem-stale" : ""}">
+      <div class="mem-view-head">
+        <span class="mono mem-key">${escapeHtml(v.key)}</span>
+        ${memoryStatusBadge(v.status)}
+      </div>
+      <div class="mem-grid">
+        <div class="mem-cell">${observedCell}</div>
+        <div class="mem-cell">${currentCell}</div>
+      </div>
+      ${notes}
+    </div>`;
+}
+
 async function renderMemory() {
   const content = document.getElementById("content");
-  const data = await api(`/runs/${encodeURIComponent(state.selectedRunId)}/memory`);
-  if (!data.events.length) {
+  const runId = state.selectedRunId;
+  let html = "";
+
+  // Temporal memory view.
+  try {
+    const view = await api(`/runs/${encodeURIComponent(runId)}/memory/view`);
+    const keys = Object.keys(view.keys || {});
+    if (keys.length) {
+      html += `<div class="panel-title">Temporal memory <span class="diff-unchanged-flag">what the agent knew vs. current state</span></div>`;
+      html += `<div class="mem-summary">${escapeHtml(view.summary || "")}</div>`;
+      html += keys.map((k) => renderMemoryViewItem(k, view.keys[k])).join("");
+      if ((view.scope_mismatches || []).length) {
+        html += renderScopeWarnings(view.scope_mismatches);
+      }
+    }
+  } catch (_) {}
+
+  // Scope / isolation section.
+  try {
+    const scopeRes = await api(`/runs/${encodeURIComponent(runId)}/scope`);
+    if (scopeRes.recorded && (!scopeRes.mismatches || !scopeRes.mismatches.length)) {
+      html += `<div class="panel-title">Scope</div><div class="card kv"><span class="k">expected scope:</span> ${escapeHtml(JSON.stringify(scopeRes.expected_scope))} &middot; no cross-scope evidence</div>`;
+    }
+  } catch (_) {}
+
+  // Raw memory lifecycle timeline.
+  const data = await api(`/runs/${encodeURIComponent(runId)}/memory`);
+  if (!data.events.length && !html) {
     content.innerHTML = emptyStateHtml(
       "No memory events recorded",
       "Call run.memory_write / memory_read / memory_update / memory_delete to see the memory lifecycle here."
@@ -715,8 +813,25 @@ async function renderMemory() {
     return;
   }
   const items = data.events.map(renderTimelineItem).join("");
-  content.innerHTML = `<div class="panel-title">Memory lifecycle</div><div class="timeline">${items}</div>`;
+  if (data.events.length) {
+    html += `<div class="panel-title">Memory lifecycle</div><div class="timeline">${items}</div>`;
+  }
+  content.innerHTML = html;
 }
+
+function renderScopeWarnings(mismatches) {
+  const rows = mismatches
+    .map(
+      (m) => `<div class="scope-warning">
+        <span class="scope-warn-badge">&#9888; CROSS-SCOPE MEMORY</span>
+        <span class="k">${escapeHtml(m.kind)}</span> <span class="mono">${escapeHtml(m.key)}</span>
+        <div>${escapeHtml(m.message)}</div>
+      </div>`
+    )
+    .join("");
+  return `<div class="panel-title">Scope / isolation <span class="diff-changed-flag">leakage detected</span></div>${rows}`;
+}
+
 
 /* -------------------------------------------------------------------- */
 /* Tools tab                                                              */
@@ -760,11 +875,35 @@ function renderTokenDiff(tokenDiff) {
       return `<span class="tok-replace">${escapeHtml(op.removed)} &rarr; ${escapeHtml(op.added)}</span>`;
     })
     .join(" ");
+  const est = tokenDiff.estimate
+    ? `<div class="tok-estimate-note">&#9432; token diff is a word-split <b>estimate</b> (${escapeHtml(tokenDiff.method || "estimate")}), not an exact model tokenizer.</div>`
+    : "";
   return `<div class="token-diff">
     <div class="token-diff-title">Token-level prompt diff (${tokenDiff.removed_count} removed, ${tokenDiff.added_count} added spans)</div>
     <div class="token-diff-body">${ops}</div>
+    ${est}
   </div>`;
 }
+
+function renderTokenCounts(tc) {
+  if (!tc) return "";
+  const est = tc.estimate
+    ? `<span class="tok-est">(estimate)</span>`
+    : "";
+  const rec = tc.recorded && tc.recorded.bad ? tc.recorded.bad : tc.recorded && tc.recorded.good ? tc.recorded.good : null;
+  let recNote = "";
+  if (rec && rec.exact) {
+    recNote = `<div class="tok-exact-note">&#9432; exact recorded prompt tokens: ${escapeHtml(rec.prompt_tokens)}${rec.total_tokens !== rec.prompt_tokens ? ` (total ${escapeHtml(rec.total_tokens)})` : ""} (source: ${escapeHtml(rec.source)})</div>`;
+  }
+  const sign = tc.delta > 0 ? "+" : "";
+  return `<div class="tok-counts">
+    <span class="k">prompt tokens:</span> good=${escapeHtml(tc.prompt_tokens_a)} &rarr; bad=${escapeHtml(tc.prompt_tokens_b)} ${est}
+    <span class="tok-delta ${tc.delta > 0 ? "delta-up" : "delta-down"}">Δ ${sign}${escapeHtml(tc.delta)}</span>
+    ${recNote}
+    ${!rec ? '<div class="tok-estimate-note">&#9432; no exact token count was recorded; counts above are a word-split estimate, not exact model tokens.</div>' : ""}
+  </div>`;
+}
+
 
 async function renderDiff() {
   const content = document.getElementById("content");
@@ -845,6 +984,29 @@ async function runDiffCompare() {
   }
 }
 
+function renderEvidenceChain(chain) {
+  if (!chain || !chain.steps) return "";
+  const dots = chain.steps
+    .map((s) => {
+      const cls =
+        s.status === "reached" ? "ec-reached" : s.status === "skipped" ? "ec-skipped" : "ec-broken";
+      return `<div class="ec-step ${cls}">
+        <span class="ec-stage">${escapeHtml(s.stage)}</span>
+        <span class="ec-detail">${escapeHtml(s.detail || "")}</span>
+      </div>`;
+    })
+    .join('<span class="ec-arrow">&#8594;</span>');
+  const broken = chain.broken_at
+    ? `<div class="ec-broken-note">Chain breaks at <b>${escapeHtml(chain.broken_at)}</b> -- no recorded event links this change that far into the pipeline.</div>`
+    : "";
+  return `<div class="card ev-chain-card">
+    <div class="ev-chain-title"><span class="k">${escapeHtml(chain.kind)}</span> <span class="mono">${escapeHtml(chain.key)}</span> = <span class="mono">${escapeHtml(jsonInline(chain.value))}</span></div>
+    <div class="ec-flow">${dots}</div>
+    ${broken}
+    <div class="ec-caveat">&#9432; ${escapeHtml(chain.caveat || "")}</div>
+  </div>`;
+}
+
 function renderDiffResult(data) {
   let html = "";
 
@@ -860,6 +1022,11 @@ function renderDiffResult(data) {
       <div class="causes-title">Likely cause${data.likely_causes.length > 1 ? "s" : ""}</div>
       <ul>${data.likely_causes.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>
     </div>`;
+  }
+
+  if (data.evidence_chains && data.evidence_chains.length) {
+    html += `<div class="panel-title">Causal evidence chain <span class="diff-unchanged-flag">where the change entered execution</span></div>`;
+    html += data.evidence_chains.map(renderEvidenceChain).join("");
   }
 
   html += `<div class="panel-title">What changed (${data.narrative.length})</div>`;
@@ -968,6 +1135,7 @@ function renderDiffDetail(name, d) {
 
     case "prompt": {
       let out = renderTokenDiff(d.token_diff);
+      out += renderTokenCounts(d.token_counts);
       out += `<div class="diff-braid">
         <div class="diff-cell ${d.good_system !== d.bad_system ? "changed" : ""} good-side">${escapeHtml(
         d.good_system || "(none)"

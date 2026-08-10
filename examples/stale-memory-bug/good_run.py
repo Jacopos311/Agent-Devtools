@@ -31,14 +31,31 @@ USER_QUESTION = "What's the current price of the Pro plan?"
 
 def retrieve(query):
     """Toy retriever. In the good run, the current pricing doc outranks
-    the older memory summary, as it should."""
+    the older memory summary, as it should.
+
+    Each result records an explicit ``outcome`` so the Retrieval tab can show
+    the selection/rejection decision directly (Phase 3)."""
     return [
-        {"id": "july_pricing_update", "content": DOCS["july_pricing_update"],
-         "source": "doc", "score": 0.91, "rerank_score": 0.85,
-         "rank": 1, "selected": True},
-        {"id": "pricing_summary", "content": MEMORY["pricing_summary"],
-         "source": "memory", "score": 0.52, "rerank_score": 0.30,
-         "rank": 2, "selected": False},
+        {
+            "id": "july_pricing_update",
+            "content": DOCS["july_pricing_update"],
+            "source": "doc",
+            "score": 0.91,
+            "rerank_score": 0.85,
+            "rank": 1,
+            "selected": True,
+            "outcome": "selected",
+        },
+        {
+            "id": "pricing_summary",
+            "content": MEMORY["pricing_summary"],
+            "source": "memory",
+            "score": 0.52,
+            "rerank_score": 0.30,
+            "rank": 2,
+            "selected": False,
+            "outcome": "rejected_threshold",
+        },
     ]
 
 
@@ -52,7 +69,8 @@ def fake_model_call(context_text):
 
 
 def run_agent(run_id):
-    with trace.run("refund-agent", run_id=run_id) as run:
+    with trace.run("refund-agent", run_id=run_id,
+                   metadata={"scope": {"tenant_id": "acme", "user_id": "u-123"}}) as run:
         run.input(USER_QUESTION)
 
         results = retrieve(USER_QUESTION)

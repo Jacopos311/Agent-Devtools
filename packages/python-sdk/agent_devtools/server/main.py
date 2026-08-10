@@ -18,9 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from ..store import TraceStore, default_db_path
 from ..diff import diff_runs, diff_runs_multi
 from ..explain import explain_retrieval
+from ..memory_view import memory_view
+from ..scope import detect_scope_mismatches, scope_from_metadata
 from ..replay import ReplayEngine
 
-app = FastAPI(title="agent-devtools", version="0.1.0")
+app = FastAPI(title="agent-devtools", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -119,6 +121,46 @@ def get_memory(run_id: str):
         run_id, ["memory.read", "memory.write", "memory.update", "memory.delete"]
     )
     return {"events": [_event_to_dict(e) for e in events]}
+
+
+@app.get("/api/runs/{run_id}/memory/view")
+def get_memory_view(run_id: str):
+    """Temporal memory view: what the agent observed at decision time vs the
+    current value -- and whether that memory has gone stale after the run."""
+    store = get_store()
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, f"run '{run_id}' not found")
+    events = store.get_events(run_id)
+    view = memory_view(events)
+    expected_scope = scope_from_metadata(run.get("metadata"))
+    if expected_scope:
+        view["expected_scope"] = expected_scope
+        mismatches = detect_scope_mismatches(events, expected_scope=expected_scope)
+        view["scope_mismatches"] = mismatches
+    return view
+
+
+@app.get("/api/runs/{run_id}/scope")
+def get_scope(run_id: str):
+    """Scope/isolation detection: expected scope vs recorded evidence.
+
+    Reports cross-scope memory/context/retrieval only when the recorded
+    evidence actually proves a mismatch. Returns ``{}`` (empty scope) when
+    no scope metadata was recorded."""
+    store = get_store()
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, f"run '{run_id}' not found")
+    events = store.get_events(run_id)
+    expected = scope_from_metadata(run.get("metadata"))
+    mismatches = detect_scope_mismatches(events, expected_scope=expected)
+    return {
+        "expected_scope": expected or {},
+        "recorded": bool(expected),
+        "mismatches": mismatches,
+        "count": len(mismatches),
+    }
 
 
 @app.get("/api/runs/{run_id}/tools")

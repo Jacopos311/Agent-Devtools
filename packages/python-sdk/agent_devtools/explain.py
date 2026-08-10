@@ -53,11 +53,85 @@ def _rerank_threshold(result: dict, query_meta: dict) -> Optional[float]:
     return _num(result.get("rerank_threshold", query_meta.get("rerank_threshold")))
 
 
+# Structured retrieval outcomes (Phase 3). These are explicit facts the
+# instrumentation can record -- never inferred when they weren't recorded.
+OUTCOME_SELECTED = "selected"
+OUTCOME_THRESHOLD = "rejected_threshold"        # similarity threshold
+OUTCOME_RERANKER = "rejected_reranker"          # reranker score threshold
+OUTCOME_FILTER = "rejected_filter"              # metadata filter
+OUTCOME_PERMISSION = "rejected_permission"      # access / permission denial
+OUTCOME_NO_MATCH = "no_match"                   # nothing matched the query
+OUTCOME_REASON = "rejected_reason"              # caller-supplied human reason
+OUTCOME_UNKNOWN = "unknown"
+
+VALID_OUTCOMES = {
+    OUTCOME_SELECTED, OUTCOME_THRESHOLD, OUTCOME_RERANKER, OUTCOME_FILTER,
+    OUTCOME_PERMISSION, OUTCOME_NO_MATCH, OUTCOME_REASON, OUTCOME_UNKNOWN,
+}
+
+# Aliases callers may use to record an explicit permission denial.
+_DENIAL_ALIASES = {"denied", "access_denied", "forbidden", "permission_denied"}
+
+
+def classify_outcome(result: dict, query_meta: Optional[dict] = None) -> str:
+    """Classify a retrieval result into a structured outcome.
+
+    Priority is: an *explicitly recorded* outcome (or denial) wins; otherwise
+    we fall back to the same heuristics ``explain_result`` uses. This keeps
+    existing traces producing the same classifications while allowing adapters
+    to record denial facts directly.
+    """
+    query_meta = query_meta or {}
+    outcome = result.get("outcome")
+    if outcome in VALID_OUTCOMES:
+        return outcome
+    if result.get("denied") is True or outcome in _DENIAL_ALIASES:
+        return OUTCOME_PERMISSION
+    if result.get("no_match") is True:
+        return OUTCOME_NO_MATCH
+
+    filtered = result.get("filtered")
+    selected = result.get("selected")
+    if filtered:
+        return OUTCOME_FILTER
+    if selected is True:
+        return OUTCOME_SELECTED
+
+    score = _num(result.get("score"))
+    threshold = _threshold(result, query_meta)
+    if score is not None and threshold is not None and score < threshold:
+        return OUTCOME_THRESHOLD
+    rerank = _rerank_score(result)
+    rerank_thr = _rerank_threshold(result, query_meta)
+    if rerank is not None and rerank_thr is not None and rerank < rerank_thr:
+        return OUTCOME_RERANKER
+    if result.get("reason"):
+        return OUTCOME_REASON
+    # Recorded as selected=False with no other signal.
+    if selected is False:
+        return OUTCOME_REASON
+    return OUTCOME_UNKNOWN
+
+
+def _explicit_denial_reason(result: dict) -> Optional[str]:
+    """A recorded denial message, if the caller supplied one.
+
+    We never invent a denial reason -- we only surface what was recorded.
+    """
+    denial_reason = result.get("denial_reason")
+    if isinstance(denial_reason, str) and denial_reason.strip():
+        return denial_reason.strip()
+    reason = result.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        return reason.strip()
+    return None
+
 def explain_result(result: dict, query_meta: Optional[dict] = None) -> str:
     """Generate a human-readable explanation for a single retrieval result.
 
     The decision logic is checked in priority order:
 
+    0. Explicitly recorded denial / outcome (never inferred).
     1. Explicitly filtered out by metadata filters.
     2. Selected (with the reasons that led to selection -- including
        cases where the reranker overrode a below-threshold similarity score).
@@ -74,6 +148,15 @@ def explain_result(result: dict, query_meta: Optional[dict] = None) -> str:
     selected = result.get("selected")
     filtered = result.get("filtered")
     reason = result.get("reason")
+
+    # 0. Explicitly recorded denial -- only surfaced when the instrumentation
+    #    actually recorded it; the reason text is never invented.
+    if result.get("denied") is True or result.get("outcome") in _DENIAL_ALIASES:
+        denial = _explicit_denial_reason(result)
+        return f"Denied: {denial}" if denial else "Denied (access / permission)."
+    if result.get("no_match") is True or result.get("outcome") == OUTCOME_NO_MATCH:
+        return "No match -- nothing in the index satisfied the query."
+
 
     # 1. Explicitly filtered out by metadata filters.
     if filtered:
@@ -274,6 +357,9 @@ def explain_retrieval(events) -> list:
                 "rank": r.get("rank"),
                 "selected": r.get("selected"),
                 "filtered": r.get("filtered"),
+                "denied": r.get("denied"),
+                "denial_reason": r.get("denial_reason"),
+                "outcome": classify_outcome(r, query_meta),
                 "threshold": _threshold(r, query_meta),
                 "reason": explain_result(r, query_meta),
             })

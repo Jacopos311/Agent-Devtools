@@ -1,6 +1,6 @@
 [project]
 name = "agent-devtools"
-version = "0.2.0"
+version = "0.3.0"
 description = "A local-first causal debugger for AI agent runs: instrument a run, then see exactly why it produced the output it did."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -979,3 +979,77 @@ table.chunk-diff tbody tr:last-child td { border-bottom: none; }
   .sidebar { display: none; }
   .diff-braid { grid-template-columns: 1fr; }
 }
+
+/* ======================================================================= */
+/* Temporal memory view (Phase 2) + Scope (Phase 4)                        */
+/* ======================================================================= */
+.mem-summary { color: var(--text-faint); font-size: 12.5px; margin: 0 0 12px; }
+.mem-view-card { margin-bottom: 10px; }
+.mem-view-card.mem-stale { border-color: var(--bad-dim); background: rgba(255, 122, 104, 0.04); }
+.mem-view-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.mem-key { font-weight: 600; color: var(--text); }
+.mem-status {
+  font-size: 10px; letter-spacing: 0.4px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+}
+.mem-status.early { color: var(--bad); border-color: var(--bad-dim); background: rgba(255, 122, 104, 0.1); }
+.mem-status.warn  { color: var(--warn); border-color: #6b551f; background: rgba(242, 184, 75, 0.1); }
+.mem-status.ok    { color: var(--good); border-color: var(--good-dim); background: rgba(72, 199, 142, 0.1); }
+.mem-status.info  { color: var(--text-faint); }
+.mem-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mem-cell { font-size: 12.5px; }
+.mem-ts, .mem-ver { color: var(--text-faint); font-size: 11px; margin-left: 6px; }
+.mem-ver { color: var(--signal); }
+.mem-na { color: var(--text-faint); font-style: italic; }
+.mem-note { font-size: 11.5px; color: var(--text-faint); margin-top: 6px; }
+.scope-warning {
+  border: 1px solid var(--bad-dim); border-radius: var(--radius);
+  background: rgba(255, 122, 104, 0.05); padding: 8px 10px; margin-bottom: 8px; font-size: 12.5px;
+}
+.scope-warn-badge {
+  color: var(--bad); border: 1px solid var(--bad-dim); background: rgba(255, 122, 104, 0.1);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.4px; border-radius: 999px; padding: 1px 8px; margin-right: 8px;
+}
+@media (max-width: 760px) { .mem-grid { grid-template-columns: 1fr; } }
+
+/* ======================================================================= */
+/* Retrieval outcomes / denials (Phase 3)                                   */
+/* ======================================================================= */
+.retr-state.denied {
+  color: var(--bad); border-color: var(--bad-dim);
+  background: rgba(255, 122, 104, 0.14); font-weight: 700; letter-spacing: 0.4px;
+}
+tr.denied-row td { background: rgba(255, 122, 104, 0.05); }
+
+/* ======================================================================= */
+/* Prompt token clarity (Phase 8)                                           */
+/* ======================================================================= */
+.tok-counts { font-size: 12.5px; margin-bottom: 6px; }
+.tok-est { color: var(--text-faint); font-size: 11px; font-style: italic; }
+.tok-delta { font-weight: 600; margin-left: 6px; }
+.tok-delta.delta-up { color: var(--warn); }
+.tok-delta.delta-down { color: var(--good); }
+.tok-estimate-note { font-size: 11px; color: var(--text-faint); margin-top: 6px; }
+.tok-exact-note { font-size: 11px; color: var(--good); margin-top: 2px; }
+
+/* ======================================================================= */
+/* Causal evidence chain (Phase 7)                                          */
+/* ======================================================================= */
+.ev-chain-card { margin-bottom: 10px; }
+.ev-chain-title { font-size: 13px; margin-bottom: 8px; }
+.ec-flow { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
+.ec-step {
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px;
+  font-size: 12px; max-width: 150px; background: var(--panel-raised);
+}
+.ec-step .ec-stage { display: block; font-family: var(--mono); font-size: 11px; font-weight: 600; margin-bottom: 3px; }
+.ec-step.ec-reached { border-color: var(--good-dim); }
+.ec-step.ec-reached .ec-stage { color: var(--good); }
+.ec-step.ec-broken { border-color: var(--bad-dim); opacity: 0.7; }
+.ec-step.ec-broken .ec-stage { color: var(--bad); }
+.ec-step.ec-skipped { opacity: 0.35; }
+.ec-step.ec-skipped .ec-stage { color: var(--text-faint); }
+.ec-arrow { color: var(--text-faint); margin-top: 8px; }
+.ec-broken-note { color: var(--warn); font-size: 12px; margin-top: 8px; }
+.ec-caveat { color: var(--text-faint); font-size: 11px; margin-top: 6px; }
+

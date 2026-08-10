@@ -115,6 +115,18 @@ class Run:
         - ``filtered``: True if this chunk was removed by metadata filters.
         - ``reason``: a custom human-readable reason for selection/rejection.
 
+        Explicit retrieval outcomes / denials (recorded by the caller when the
+        instrumentation knows them; never inferred here):
+
+        - ``outcome``: one of ``selected``, ``rejected_threshold``,
+          ``rejected_reranker``, ``rejected_filter``, ``rejected_permission``,
+          ``no_match``, ``rejected_reason``.
+        - ``denied``: True when this candidate was denied (access/permission).
+        - ``denial_reason``: a human-readable denial reason you recorded,
+          e.g. ``"tenant_scope mismatch"``.
+        - ``no_match``: True when the query produced no candidates at all.
+
+
         Optional query-level metadata (passed via ``**meta``) that is shown
         in the Retrieval Explanation tab:
 
