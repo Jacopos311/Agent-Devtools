@@ -14,6 +14,7 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -39,6 +40,18 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_run ON events (run_id);
 CREATE INDEX IF NOT EXISTS idx_events_run_type ON events (run_id, type);
+
+CREATE TABLE IF NOT EXISTS replays (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    status TEXT NOT NULL,
+    summary TEXT,
+    report TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_replays_run ON replays (run_id);
 """
 
 
@@ -167,10 +180,11 @@ class TraceStore:
             self._conn.commit()
 
     def delete_run(self, run_id: str) -> bool:
-        """Delete a single run and all of its events. Returns True if the
-        run existed and was deleted, False otherwise."""
+        """Delete a single run, its events, and its replay records. Returns
+        True if the run existed and was deleted, False otherwise."""
         with self._lock:
             cur = self._conn.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+            self._conn.execute("DELETE FROM replays WHERE run_id = ?", (run_id,))
             cur = self._conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
             self._conn.commit()
             deleted = cur.rowcount > 0
@@ -179,10 +193,11 @@ class TraceStore:
         return deleted
 
     def clear_runs(self) -> int:
-        """Delete every run and event in the store. Returns the number of
-        runs that were removed."""
+        """Delete every run, event, and replay record in the store. Returns
+        the number of runs that were removed."""
         with self._lock:
             cur = self._conn.execute("DELETE FROM events")
+            self._conn.execute("DELETE FROM replays")
             cur = self._conn.execute("DELETE FROM runs")
             self._conn.commit()
             deleted = cur.rowcount
@@ -280,3 +295,52 @@ class TraceStore:
             self.log_event(run_id, e["type"], e["payload"])
         self.finish_run(run_id, run.get("status", "ok"))
         return run_id
+
+    # -- deterministic replays -----------------------------------------
+
+    def save_replay(self, run_id: str, report) -> str:
+        """Persist a ReplayReport (or ``to_dict()``-shaped dict) next to its
+        run. Returns the replay id."""
+        replay = report.to_dict() if hasattr(report, "to_dict") else report
+        replay_id = replay.get("replay_id") or f"replay-{uuid.uuid4().hex[:12]}"
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO replays (id, run_id, created_at, status, summary, report) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    replay_id,
+                    replay.get("run_id", run_id),
+                    replay.get("created_at", time.time()),
+                    replay.get("status", ""),
+                    replay.get("summary", ""),
+                    json.dumps(replay, default=str),
+                ),
+            )
+            self._conn.commit()
+        return replay_id
+
+    def list_replays(self, run_id: str) -> list[dict]:
+        """List a run's replay records (most recent first), without the full
+        report body."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, run_id, created_at, status, summary FROM replays "
+                "WHERE run_id = ? ORDER BY created_at DESC",
+                (run_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_replay(self, run_id: str, replay_id: str) -> Optional[dict]:
+        """Return one replay record with its full ``report`` parsed back to a
+        dict, or None if it does not exist for this run."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, run_id, created_at, status, summary, report "
+                "FROM replays WHERE run_id = ? AND id = ?",
+                (run_id, replay_id),
+            ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        out["report"] = json.loads(out["report"])
+        return out

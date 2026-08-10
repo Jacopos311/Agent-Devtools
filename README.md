@@ -156,7 +156,7 @@ The Dashboard is a static web UI served by the local debug server at `http://127
 
 | Tab | What it shows |
 |---|---|
-| **Replay** | The full run, step by step, in event order |
+| **Replay** | The full run, step by step, in event order — plus **Deterministic Replay**: re-execute the recorded events in isolation and get a `completed` / `diverged` / `failed` report with divergence evidence |
 | **Graph** | A visual flow of the run: Input → Retrieval → Memory → Prompt → LLM → Tools → Final Answer, with per-stage event counts. Click a node to inspect its events |
 | **Prompt** | The exact final assembled prompt the LLM saw, including system message and context references |
 | **Context** | Every injected context block, in injection order, tagged with its source (memory, doc, ...) |
@@ -279,6 +279,43 @@ Two related mechanisms:
 
    The fixture format (`agent-devtools/fixture@1`) is a portable export of a run's events, produced by `TraceStore.export_fixture()` or the `/api/runs/{run_id}/fixture` endpoint. **Note:** the command is implemented, but this repository does not currently ship any example fixture files — you generate them from your own runs.
 
+### Deterministic Replay — is this run self-consistent?
+
+Click **Run Deterministic Replay** in the **Replay** tab (or call
+`POST /api/runs/{run_id}/replay`) and Agent DevTools re-executes the run's
+recorded event log in isolation — no network, no LLM, no user code — then
+returns a `ReplayReport` with one of three statuses:
+
+| Status | Meaning |
+|---|---|
+| **completed** | Every recorded event is internally consistent. A deterministic re-run with the same inputs would reproduce the exact event chain. |
+| **diverged** | The recorded log contradicts itself, and the report names the exact event where determinism broke with a *divergence evidence* entry (expected vs. actual). |
+| **failed** | The run recorded a failure — a debug `assertion.failed` or a run that ended with status `error`. |
+
+The deterministic checks are the parts of a run that are fully determined by
+its own events:
+
+- **Memory lifecycle** — `memory.write` / `memory.update` / `memory.delete`
+  are replayed onto a fresh store; each `memory.read` and `memory.update`
+  `old_value` is checked against the replayed chain. A read that returns a
+  value the write chain never wrote (e.g. a **stale memory** bug) is reported
+  as `memory.read.stale` divergence.
+- **Retrieval** — candidate ranks are re-derived from scores and the selected
+  set is checked for score monotonicity; a rank flip or a selected candidate
+  scoring below a rejected one is reported (`retrieval.rank`,
+  `retrieval.selection`).
+- **Tools** — every `tool.call` must be matched by a `tool.result` /
+  `tool.error`; unmatched calls are reported as notes.
+- **CI debug assertions** — `assertion.passed` / `assertion.failed` are
+  replayed; a failed assertion marks the report **failed**.
+
+Replay reports are persisted against the run and listed in the **Replay
+history** pane, so you can see how the answer and the evidence evolved across
+replays. This is distinct from the framework-level graph replay in the Atlas
+example (`verify_traces.py --replay`), which re-runs the agent's actual code;
+deterministic replay works on *any* recorded run with no agent code.
+
+
 ---
 
 ## Supported integrations
@@ -377,6 +414,9 @@ The local debug server exposes a small REST API over the same SQLite file the SD
 | GET | `/api/runs/{run_id}/tools` | Tool call/result events |
 | GET | `/api/runs/{run_id}/assertions` | Assertion pass/fail events |
 | GET | `/api/runs/{run_id}/fixture` | Export run as a portable fixture JSON |
+| POST | `/api/runs/{run_id}/replay` | Run a deterministic replay; persists and returns a `ReplayReport` |
+| GET | `/api/runs/{run_id}/replays` | List replay reports for a run (id, status, summary, time) |
+| GET | `/api/runs/{run_id}/replay/{replay_id}/report` | Full `ReplayReport` (steps + divergence evidence) for one replay |
 | GET | `/api/diff?a={run_a}&b={run_b}` | Behavior diff: sections, narrative, likely_causes, scored_causes, token_diff |
 | GET | `/api/diff/multi?baseline={run}&candidates={a,b,...}` | Multi-run diff: per-candidate diffs + common root causes |
 
@@ -430,6 +470,7 @@ Every UI tab and the diff engine is a **derived view computed at read time** ove
 │       ├── store.py          # append-only SQLite trace store
 │       ├── diff.py           # Behavior Diff engine (sections/narrative/likely causes)
 │       ├── explain.py        # Retrieval Explanation engine
+│       ├── replay.py         # Deterministic Replay engine (completed/diverged/failed + ReplayReport)
 │       ├── redaction.py      # best-effort secret redaction before persistence
 │       ├── cli.py            # agent-devtools serve / test
 │       ├── debugger.py       # AgentDebugger zero-config entry point

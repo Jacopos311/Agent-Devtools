@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from ..store import TraceStore, default_db_path
 from ..diff import diff_runs, diff_runs_multi
 from ..explain import explain_retrieval
+from ..replay import ReplayEngine
 
 app = FastAPI(title="agent-devtools", version="0.1.0")
 
@@ -132,6 +133,44 @@ def get_assertions(run_id: str):
     store = get_store()
     events = store.get_events_by_types(run_id, ["assertion.passed", "assertion.failed"])
     return {"events": [_event_to_dict(e) for e in events]}
+
+
+# ---------------------------------------------------------------------------
+# Deterministic Replay
+
+
+@app.post("/api/runs/{run_id}/replay")
+def create_replay(run_id: str):
+    """Run a deterministic replay of the run and persist the ReplayReport.
+
+    Deterministic replay re-executes the recorded event log in isolation
+    (no network, no LLM, no user code) and reports whether the recorded
+    behavior is self-consistent (``completed``), internally contradictory
+    (``diverged``), or recorded a failure (``failed``).
+    """
+    store = get_store()
+    if store.get_run(run_id) is None:
+        raise HTTPException(404, f"run '{run_id}' not found")
+    report = ReplayEngine(store).replay(run_id)
+    store.save_replay(run_id, report)
+    return {"replay_id": report.replay_id, "report": report.to_dict()}
+
+
+@app.get("/api/runs/{run_id}/replays")
+def list_replays(run_id: str):
+    store = get_store()
+    if store.get_run(run_id) is None:
+        raise HTTPException(404, f"run '{run_id}' not found")
+    return {"replays": store.list_replays(run_id)}
+
+
+@app.get("/api/runs/{run_id}/replay/{replay_id}/report")
+def get_replay_report(run_id: str, replay_id: str):
+    store = get_store()
+    replay = store.get_replay(run_id, replay_id)
+    if replay is None:
+        raise HTTPException(404, f"replay '{replay_id}' not found for run '{run_id}'")
+    return {"replay": replay}
 
 
 @app.get("/api/runs/{run_id}/fixture")

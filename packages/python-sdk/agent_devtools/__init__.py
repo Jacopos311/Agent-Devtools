@@ -43,6 +43,7 @@ from .trace import open_ui, serve  # noqa: F401
 from . import explain  # noqa: F401
 from .store import TraceStore, default_db_path  # noqa: F401
 from .diff import diff_runs, diff_runs_multi  # noqa: F401
+from .replay import ReplayEngine, ReplayReport  # noqa: F401
 from .adapters import LangChainTraceHandler  # noqa: F401
 from .adapters.groq import TracedGroq, create_groq_llm, wrap_groq  # noqa: F401
 from .debugger import AgentDebugger  # noqa: F401
@@ -55,6 +56,8 @@ __all__ = [
     "default_db_path",
     "diff_runs",
     "diff_runs_multi",
+    "ReplayEngine",
+    "ReplayReport",
     "LangChainTraceHandler",
     "TracedGroq",
     "create_groq_llm",

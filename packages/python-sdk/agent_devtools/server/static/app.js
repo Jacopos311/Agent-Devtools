@@ -6,6 +6,7 @@ const state = {
   activeTab: "replay",
   diffA: null,
   diffB: null,
+  replay: { runId: null, replays: [], selectedReplayId: null, reports: {} },
 };
 
 async function api(path, options) {
@@ -238,16 +239,217 @@ function renderTimelineItem(e) {
 
 async function renderReplay() {
   const content = document.getElementById("content");
-  const data = await api(`/runs/${encodeURIComponent(state.selectedRunId)}`);
+  const runId = state.selectedRunId;
+  if (!runId) return;
+  const data = await api(`/runs/${encodeURIComponent(runId)}`);
+
+  // Refresh the replay history for this run.
+  try {
+    const rep = await api(`/runs/${encodeURIComponent(runId)}/replays`);
+    state.replay.runId = runId;
+    state.replay.replays = rep.replays || [];
+    const stillAround = state.replay.replays.some(
+      (r) => r.id === state.replay.selectedReplayId
+    );
+    if (!stillAround) state.replay.selectedReplayId = null;
+  } catch (_) {
+    state.replay.replays = [];
+  }
+
   const items = data.events.map(renderTimelineItem).join("");
   content.innerHTML = `
-    <div class="panel-title">Run ${escapeHtml(data.run.id)} &middot; ${escapeHtml(data.run.agent_name)} &middot; ${escapeHtml(
-    data.run.status
-  )}</div>
+    <div class="panel-title">Run ${escapeHtml(data.run.id)} &middot; ${escapeHtml(
+    data.run.agent_name
+  )} &middot; ${escapeHtml(data.run.status)}</div>
+
+    <div class="replay-ctl">
+      <button class="replay-btn" id="replay-btn">&#9654; Run Deterministic Replay</button>
+      <span class="replay-ctl-note">Re-executes this run&rsquo;s recorded events with no network, no LLM, no user code.</span>
+    </div>
+    <div id="replay-report"></div>
+
+    <div class="panel-title">Replay history</div>
+    <div class="replay-history" id="replay-history"></div>
+
+    <div class="panel-title">Recorded event timeline</div>
     <div class="timeline">${items || emptyHint("No events recorded on this run yet.")}</div>`;
+
+  document.getElementById("replay-btn").addEventListener("click", runReplay);
+  renderReplayHistory();
+  await renderReplayReport();
+}
+
+async function runReplay() {
+  const btn = document.getElementById("replay-btn");
+  const reportEl = document.getElementById("replay-report");
+  if (!btn || !state.selectedRunId) return;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span> Replaying&hellip;`;
+  try {
+    const res = await api(`/runs/${encodeURIComponent(state.selectedRunId)}/replay`, {
+      method: "POST",
+    });
+    state.replay.selectedReplayId = res.replay_id;
+    state.replay.reports[res.replay_id] = res.report;
+    try {
+      const rep = await api(`/runs/${encodeURIComponent(state.selectedRunId)}/replays`);
+      state.replay.replays = rep.replays || [];
+    } catch (_) {}
+    renderReplayHistory();
+    await renderReplayReport();
+  } catch (err) {
+    if (reportEl) {
+      reportEl.innerHTML = `<div class="replay-error">Replay failed to run: ${escapeHtml(
+        err.message
+      )}</div>`;
+    }
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = "&#9654; Run Deterministic Replay";
+  }
+}
+
+function renderReplayHistory() {
+  const el = document.getElementById("replay-history");
+  if (!el) return;
+  const reps = state.replay.replays || [];
+  if (!reps.length) {
+    el.innerHTML = emptyHint("No replays recorded yet. Click \u201cRun Deterministic Replay\u201d.");
+    return;
+  }
+  el.innerHTML = reps
+    .map(
+      (r) => `
+    <div class="replay-history-item ${r.id === state.replay.selectedReplayId ? "selected" : ""}" data-replay="${escapeHtml(
+        r.id
+      )}">
+      <span class="replay-badge rp-${escapeHtml(r.status)}">${escapeHtml(r.status)}</span>
+      <span class="replay-history-when">${relTime(r.created_at)}</span>
+      <span class="replay-history-summary">${escapeHtml(r.summary || "")}</span>
+    </div>`
+    )
+    .join("");
+  el.querySelectorAll(".replay-history-item").forEach((node) => {
+    node.addEventListener("click", () => selectReplay(node.dataset.replay));
+  });
+}
+async function selectReplay(replayId) {
+  state.replay.selectedReplayId = replayId;
+  renderReplayHistory();
+  await renderReplayReport();
+}
+
+async function renderReplayReport() {
+  const el = document.getElementById("replay-report");
+  if (!el) return;
+  const rid = state.replay.selectedReplayId;
+  if (!rid) {
+    el.innerHTML = "";
+    return;
+  }
+  let report = state.replay.reports[rid];
+  if (!report) {
+    try {
+      const res = await api(
+        `/runs/${encodeURIComponent(state.selectedRunId)}/replay/${encodeURIComponent(rid)}/report`
+      );
+      report = res.replay ? res.replay.report : res.report;
+      state.replay.reports[rid] = report;
+    } catch (err) {
+      el.innerHTML = `<div class="replay-error">Couldn&rsquo;t load report: ${escapeHtml(
+        err.message
+      )}</div>`;
+      return;
+    }
+  }
+  el.innerHTML = replayReportHtml(report);
+}
+
+function replayReportHtml(r) {
+  const labels = { completed: "Completed", diverged: "Diverged", failed: "Failed" };
+  const status = r.status || "completed";
+  const evidence = r.evidence || [];
+  const divergences = evidence.filter((e) => e.severity !== "note");
+  const notes = evidence.filter((e) => e.severity === "note");
+  const output = r.output;
+  const memKeys = Object.keys(r.memory_final || {}).length;
+
+  return `
+    <div class="replay-report rp-${status}">
+      <div class="replay-report-head">
+        <span class="replay-badge replay-badge-lg rp-${status}">${labels[status] || status}</span>
+        <span class="replay-report-meta">${escapeHtml(r.summary || "")}</span>
+      </div>
+      <div class="replay-report-stats">
+        <div class="replay-stat"><span class="replay-stat-n">${r.events_replayed}</span><span class="replay-stat-l">events replayed</span></div>
+        <div class="replay-stat"><span class="replay-stat-n">${r.assertions.failed || 0}</span><span class="replay-stat-l">assertions failed</span></div>
+        <div class="replay-stat"><span class="replay-stat-n">${memKeys}</span><span class="replay-stat-l">memory keys replayed</span></div>
+        <div class="replay-stat"><span class="replay-stat-n">${divergences.length}</span><span class="replay-stat-l">divergence items</span></div>
+      </div>
+      ${
+        output !== undefined && output !== null
+          ? `<div class="card kv replay-output"><span class="k">final output:</span> ${escapeHtml(
+              truncate(jsonInline(output), 1000)
+            )}</div>`
+          : ""
+      }
+      ${
+        evidence.length
+          ? `<div class="panel-title" style="margin-top:12px;">Replay report &mdash; divergence evidence</div>
+             ${divergences.map(replayEvidenceHtml).join("")}
+             ${
+               notes.length
+                 ? `<div class="replay-notes">${notes
+                     .map((n) => `<div class="replay-note">&#8226; ${escapeHtml(n.message)}</div>`)
+                     .join("")}</div>`
+                 : ""
+             }`
+          : ""
+      }
+      <details class="replay-steps">
+        <summary>Replay steps (${r.steps.length})</summary>
+        <div class="replay-steps-list">${r.steps.map(replayStepHtml).join("")}</div>
+      </details>
+    </div>`;
 }
 
 /* -------------------------------------------------------------------- */
+function replayEvidenceHtml(e) {
+  return `
+    <div class="replay-evidence ${e.severity === "failure" ? "ev-failure" : "ev-divergence"}">
+      <div class="replay-evidence-head">
+        <span class="ev-kind">${escapeHtml(e.kind)}</span>
+        <span class="ev-seq">event #${e.seq ?? "-"}</span>
+      </div>
+      <div class="replay-evidence-msg">${escapeHtml(e.message)}</div>
+      ${
+        e.expected !== undefined && e.actual !== undefined
+          ? `<div class="diff-braid replay-evidence-compare">
+               <div class="diff-cell changed good-side"><span class="k">expected</span><br>${escapeHtml(
+                 truncate(jsonInline(e.expected), 600)
+               )}</div>
+               <div class="diff-cell changed bad-side"><span class="k">actual</span><br>${escapeHtml(
+                 truncate(jsonInline(e.actual), 600)
+               )}</div>
+             </div>`
+          : ""
+      }
+    </div>`;
+}
+
+function replayStepHtml(s) {
+  const icon =
+    s.status === "ok" ? "&#10003;" :
+    s.status === "mismatch" ? "&#10007;" :
+    s.status === "failed" ? "&#10008;" : "&bull;";
+  const cls =
+    s.status === "ok" ? "st-ok" :
+    s.status === "mismatch" ? "st-mismatch" :
+    s.status === "failed" ? "st-failed" : "st-note";
+  return `<div class="replay-step ${cls}"><span class="replay-step-icon">${icon}</span><span class="replay-step-type">${escapeHtml(
+    s.type
+  )}</span><span class="replay-step-detail">${escapeHtml(s.detail || "")}</span></div>`;
+}
 /* Graph tab -- visual flow of the current run                            */
 /* -------------------------------------------------------------------- */
 
