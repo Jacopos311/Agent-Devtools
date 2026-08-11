@@ -7,6 +7,8 @@ const state = {
   diffA: null,
   diffB: null,
   replay: { runId: null, replays: [], selectedReplayId: null, reports: {} },
+  regression: { baseline: null, candidateIds: [], result: null },
+  scopes: {},
 };
 
 async function api(path, options) {
@@ -115,16 +117,21 @@ function selectRun(runId) {
 document.getElementById("tabstrip").addEventListener("click", (e) => {
   const btn = e.target.closest(".tab");
   if (!btn) return;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-  btn.classList.add("active");
-  state.activeTab = btn.dataset.tab;
-  history.replaceState(null, "", "#" + state.activeTab);
+  switchToTab(btn.dataset.tab);
   renderActiveTab();
 });
 
+function switchToTab(tabName) {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+  const btn = document.querySelector(`.tab[data-tab="${tabName}"]`);
+  if (btn) btn.classList.add("active");
+  state.activeTab = tabName;
+  history.replaceState(null, "", "#" + tabName);
+}
+
 async function renderActiveTab() {
   const content = document.getElementById("content");
-  if (state.activeTab !== "diff" && !state.selectedRunId) {
+  if (state.activeTab !== "diff" && state.activeTab !== "regression" && !state.selectedRunId) {
     content.innerHTML = emptyStateHtml(
       "No run selected",
       "Instrument a run with the Python SDK, then pick it up on the left."
@@ -140,6 +147,7 @@ async function renderActiveTab() {
     if (state.activeTab === "memory") return await renderMemory();
     if (state.activeTab === "tools") return await renderTools();
     if (state.activeTab === "diff") return await renderDiff();
+    if (state.activeTab === "regression") return await renderRegression();
   } catch (err) {
     content.innerHTML = emptyStateHtml("Couldn't load this tab", escapeHtml(err.message));
   }
@@ -661,7 +669,7 @@ function outcomeBadge(outcome) {
   return `<span class="retr-state ${m.cls}">${m.label}</span>`;
 }
 
-function renderRetrievalResultRow(r) {
+function renderRetrievalResultRow(r, crossScopeIds) {
   const selected = r.selected === true;
   const rejected = r.selected === false;
   const stateBadge = selected
@@ -671,10 +679,11 @@ function renderRetrievalResultRow(r) {
     : `<span class="retr-state unknown">—</span>`;
   const reason = r.reason || "";
   const isDenied = r.outcome === "rejected_permission";
+  const crossScope = (crossScopeIds && crossScopeIds.has(r.id)) ? `<span class="scope-warn-badge" style="margin-right:6px">⚠ cross-scope</span>` : "";
   return `
     <tr class="${selected ? "selected" : ""} ${isDenied ? "denied-row" : ""}">
       <td><span class="rank-pill">#${r.rank ?? "-"}</span></td>
-      <td class="mono">${escapeHtml(r.id || "")}</td>
+      <td class="mono">${crossScope}${escapeHtml(r.id || "")}</td>
       <td>${escapeHtml(r.source || "")}</td>
       <td class="mono">${fmtScore(r.score)}</td>
       <td class="mono">${fmtScore(r.rerank_score)}</td>
@@ -696,6 +705,13 @@ async function renderRetrieval() {
     );
     return;
   }
+
+  // Proven cross-scope retrieval chunks (from /scope), shown inline per-row.
+  const mm = await loadScopeMismatches(state.selectedRunId);
+  const crossScopeIds = new Set(
+    mm.filter((m) => m.kind === "retrieval.result").map((m) => m.key)
+  );
+
   let html = `<div class="panel-title">Retrieval</div>`;
   explanations.forEach((exp) => {
     const rows = [...(exp.results || [])].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
@@ -709,7 +725,7 @@ async function renderRetrieval() {
         <table class="rt retr-table">
           <thead><tr><th>Rank</th><th>Id</th><th>Source</th><th>Score</th><th>Rerank</th><th>Threshold</th><th>State</th><th>Reason</th></tr></thead>
           <tbody>
-            ${rows.map(renderRetrievalResultRow).join("")}
+            ${rows.map((r) => renderRetrievalResultRow(r, crossScopeIds)).join("")}
           </tbody>
         </table>
         </div>
@@ -974,24 +990,47 @@ async function runDiffCompare() {
   try {
     if (badList.length === 1) {
       const data = await api(`/diff?a=${encodeURIComponent(state.diffA)}&b=${encodeURIComponent(badList[0])}`);
-      resultEl.innerHTML = renderDiffResult(data);
+      resultEl.innerHTML = await renderDiffResult(data);
     } else {
       const data = await api(`/diff/multi?baseline=${encodeURIComponent(state.diffA)}&candidates=${encodeURIComponent(badList.join(","))}`);
-      resultEl.innerHTML = renderDiffMultiResult(data);
+      resultEl.innerHTML = await renderDiffMultiResult(data);
     }
   } catch (err) {
     resultEl.innerHTML = emptyStateHtml("Couldn't compute diff", escapeHtml(err.message));
   }
 }
 
+async function loadScopeMismatches(runId) {
+  if (!runId) return [];
+  if (state.scopes[runId] !== undefined) return state.scopes[runId];
+  try {
+    const r = await api(`/runs/${encodeURIComponent(runId)}/scope`);
+    state.scopes[runId] = r.mismatches || [];
+  } catch (_) {
+    state.scopes[runId] = [];
+  }
+  return state.scopes[runId];
+}
+
 function renderEvidenceChain(chain) {
   if (!chain || !chain.steps) return "";
   const dots = chain.steps
     .map((s) => {
-      const cls =
-        s.status === "reached" ? "ec-reached" : s.status === "skipped" ? "ec-skipped" : "ec-broken";
-      return `<div class="ec-step ${cls}">
+      let cls = "ec-step ";
+      let ev = "";
+      if (s.status === "reached") {
+        cls += "ec-reached";
+        ev = '<span class="ec-evidence-label ec-ev-observed">&#9679; observed evidence</span>';
+      } else if (s.status === "skipped") {
+        cls += "ec-skipped";
+        ev = '<span class="ec-evidence-label ec-ev-skipped">&#8212; inferred (not this path)</span>';
+      } else {
+        cls += "ec-broken";
+        ev = '<span class="ec-evidence-label ec-ev-gap">&#8212; inferred gap (no recorded event)</span>';
+      }
+      return `<div class="${cls}">
         <span class="ec-stage">${escapeHtml(s.stage)}</span>
+        ${ev}
         <span class="ec-detail">${escapeHtml(s.detail || "")}</span>
       </div>`;
     })
@@ -1001,13 +1040,18 @@ function renderEvidenceChain(chain) {
     : "";
   return `<div class="card ev-chain-card">
     <div class="ev-chain-title"><span class="k">${escapeHtml(chain.kind)}</span> <span class="mono">${escapeHtml(chain.key)}</span> = <span class="mono">${escapeHtml(jsonInline(chain.value))}</span></div>
+    <div class="ec-legend">
+      <span class="ec-leg ec-leg-observed">&#9679; observed evidence</span>
+      <span class="ec-leg ec-leg-gap">&#8212; inferred / gap</span>
+      <span class="ec-leg ec-leg-caveat">&#9432; caveat</span>
+    </div>
     <div class="ec-flow">${dots}</div>
     ${broken}
-    <div class="ec-caveat">&#9432; ${escapeHtml(chain.caveat || "")}</div>
+    <div class="ec-caveat">&#9432; ${escapeHtml(chain.caveat || "Event-level and context-level evidence plus output correlation only -- true token-level attribution is not available.")}</div>
   </div>`;
 }
 
-function renderDiffResult(data) {
+async function renderDiffResult(data) {
   let html = "";
 
   if (data.scored_causes && data.scored_causes.length) {
@@ -1027,6 +1071,14 @@ function renderDiffResult(data) {
   if (data.evidence_chains && data.evidence_chains.length) {
     html += `<div class="panel-title">Causal evidence chain <span class="diff-unchanged-flag">where the change entered execution</span></div>`;
     html += data.evidence_chains.map(renderEvidenceChain).join("");
+  }
+
+  // Scope / isolation: surface proven cross-scope leaks in the *candidate* run
+  // here in the Diff view (also shown in the Memory tab).
+  const mm = await loadScopeMismatches(data.run_b);
+  if (mm.length) {
+    html += `<div class="panel-title">Scope / isolation <span class="diff-changed-flag">cross-scope leak in ${escapeHtml(data.run_b)}</span></div>`;
+    html += renderScopeWarnings(mm);
   }
 
   html += `<div class="panel-title">What changed (${data.narrative.length})</div>`;
@@ -1049,7 +1101,7 @@ function renderDiffResult(data) {
   return html;
 }
 
-function renderDiffMultiResult(data) {
+async function renderDiffMultiResult(data) {
   let html = `<div class="panel-title">Multi-run diff &middot; baseline ${escapeHtml(data.baseline)} vs ${data.candidates.length} candidate(s)</div>`;
 
   if (data.common_causes && data.common_causes.length) {
@@ -1061,10 +1113,10 @@ function renderDiffMultiResult(data) {
     html += emptyHint("No single cause is common across every candidate run.");
   }
 
-  data.comparisons.forEach((comp) => {
+  for (const comp of data.comparisons) {
     html += `<div class="diff-section-title">vs ${escapeHtml(comp.run_b)}</div>`;
-    html += renderDiffResult(comp);
-  });
+    html += await renderDiffResult(comp);
+  }
 
   return html;
 }
@@ -1150,8 +1202,46 @@ function renderDiffDetail(name, d) {
           <div class="diff-cell changed bad-side">${jsonPretty(d.bad_messages)}</div>
         </div>`;
       }
+      if (d.config_diff && d.config_diff.length) {
+        out += `<div class="card kv" style="margin-top:8px;"><span class="k">Model / prompt configuration</span>${d.config_diff
+          .map(
+            (c) =>
+              `<div style="margin-bottom:4px;"><span class="k">${escapeHtml(c.key)}:</span> <span class="mono">${escapeHtml(
+                jsonInline(c.good)
+              )}</span> &rarr; <span class="mono">${escapeHtml(jsonInline(c.bad))}</span></div>`
+          )
+          .join("")}</div>`;
+      }
       return out;
     }
+
+    case "assertions":
+      return `<div class="card kv">
+        <div style="margin-bottom:6px;"><span class="k">good run:</span> <span class="badge b-assert-pass">${escapeHtml(
+          d.good.passed
+        )} passed</span> <span class="badge b-assert-fail">${escapeHtml(
+        d.good.failed
+      )} failed</span></div>
+        <div><span class="k">bad run:</span> <span class="badge b-assert-pass">${escapeHtml(
+          d.bad.passed
+        )} passed</span> <span class="badge b-assert-fail">${escapeHtml(
+        d.bad.failed
+      )} failed</span></div>
+        ${
+          d.bad.failures && d.bad.failures.length
+            ? `<div style="margin-top:6px;"><span class="k">bad failures:</span> ${d.bad.failures
+                .map((f) => `<span class="badge b-assert-fail">${escapeHtml(f.name || "?")}</span>`)
+                .join(" ")}</div>`
+            : ""
+        }
+        ${
+          d.good.failures && d.good.failures.length
+            ? `<div style="margin-top:6px;"><span class="k">good failures:</span> ${d.good.failures
+                .map((f) => `<span class="badge b-assert-fail">${escapeHtml(f.name || "?")}</span>`)
+                .join(" ")}</div>`
+            : ""
+        }
+      </div>`;
 
     case "tools":
       return `<div class="diff-braid">
@@ -1168,6 +1258,211 @@ function renderDiffDetail(name, d) {
       return `<div class="card"><pre class="raw">${jsonPretty(d)}</pre></div>`;
   }
 }
+
+/* -------------------------------------------------------------------- */
+/* -------------------------------------------------------------------- */
+/* Regression tab -- N-run regression analysis                            */
+/* -------------------------------------------------------------------- */
+
+const REGRESSION_STATUS_META = {
+  regression: { label: "REGRESSION", cls: "reg-bad" },
+  suspicious: { label: "SUSPICIOUS", cls: "reg-warn" },
+  normal: { label: "NORMAL", cls: "reg-ok" },
+};
+
+function regressionStatusBadge(status) {
+  const m = REGRESSION_STATUS_META[status] || REGRESSION_STATUS_META.normal;
+  return `<span class="reg-status ${m.cls}">${m.label}</span>`;
+}
+
+async function renderRegression() {
+  const content = document.getElementById("content");
+  if (state.runs.length < 2) {
+    content.innerHTML = emptyStateHtml(
+      "Need at least two runs",
+      "Pick a baseline (good) run and one or more candidate (bad) runs to scan for regressions."
+    );
+    return;
+  }
+
+  if (!state.regression.baseline) {
+    state.regression.baseline = state.runs[0].id;
+    state.regression.candidateIds = state.runs.slice(1).map((r) => r.id);
+  }
+
+  const optionsFor = (selectedId) =>
+    state.runs
+      .map(
+        (r) =>
+          `<option value="${escapeHtml(r.id)}" ${r.id === selectedId ? "selected" : ""}>${escapeHtml(r.id)}</option>`
+      )
+      .join("");
+
+  const candidateOptions = state.runs
+    .filter((r) => r.id !== state.regression.baseline)
+    .map(
+      (r) =>
+        `<option value="${escapeHtml(r.id)}" ${
+          state.regression.candidateIds.includes(r.id) ? "selected" : ""
+        }>${escapeHtml(r.id)}</option>`
+    )
+    .join("");
+
+  content.innerHTML = `
+    <div class="panel-title">Regression analysis</div>
+    <div class="diff-picker">
+      <span class="diff-col-head good" style="border:none;padding:0;">baseline (good)</span>
+      <select id="reg-baseline">${optionsFor(state.regression.baseline)}</select>
+      <span class="diff-arrow">vs</span>
+      <span class="diff-col-head bad" style="border:none;padding:0;">candidates</span>
+      <select id="reg-candidates" multiple size="5">${candidateOptions}</select>
+      <button class="diff-run-btn" id="reg-run-btn">Run regression scan</button>
+    </div>
+    <div class="diff-picker-hint">Hold &#8984;/Ctrl to select multiple candidate runs. Each finding links back to the existing Diff / Replay workflow.</div>
+    <div id="reg-result"></div>
+  `;
+
+  document.getElementById("reg-run-btn").addEventListener("click", async () => {
+    state.regression.baseline = document.getElementById("reg-baseline").value;
+    state.regression.candidateIds = Array.from(
+      document.getElementById("reg-candidates").selectedOptions
+    ).map((o) => o.value);
+    await runRegressionScan();
+  });
+
+  if (state.regression.result) {
+    await renderRegressionResult(state.regression.result);
+  }
+}
+
+async function runRegressionScan() {
+  const resultEl = document.getElementById("reg-result");
+  if (!resultEl) return;
+  if (!state.regression.baseline || !state.regression.candidateIds.length) {
+    resultEl.innerHTML = emptyHint("Pick a baseline and at least one candidate run.");
+    return;
+  }
+  resultEl.innerHTML = emptyHint("Scanning\u2026");
+  try {
+    const data = await api(
+      `/regression?baseline=${encodeURIComponent(state.regression.baseline)}&candidates=${encodeURIComponent(
+        state.regression.candidateIds.join(",")
+      )}`
+    );
+    state.regression.result = data;
+    await renderRegressionResult(data);
+  } catch (err) {
+    resultEl.innerHTML = emptyStateHtml("Couldn't run regression analysis", escapeHtml(err.message));
+  }
+}
+
+/* -------------------------------------------------------------------- */
+function renderFindingEvidence(f) {
+  let html = "";
+  if (f.scored_causes && f.scored_causes.length) {
+    html += `<div class="causes"><div class="causes-title">Likely cause(s)</div><ul>${f.scored_causes
+      .map((c) => `<li>${confidenceBadge(c.confidence)} ${escapeHtml(c.message)}</li>`)
+      .join("")}</ul></div>`;
+  }
+  if (f.evidence_chains && f.evidence_chains.length) {
+    html += `<div class="panel-title" style="margin-top:10px;">Causal evidence chain <span class="diff-unchanged-flag">where the change entered execution</span></div>`;
+    html += f.evidence_chains.map(renderEvidenceChain).join("");
+  }
+  if (f.scope_mismatches && f.scope_mismatches.length) {
+    html += renderScopeWarnings(f.scope_mismatches);
+  }
+  if (f.stale_memory && f.stale_memory.length) {
+    html += `<div class="panel-title" style="margin-top:10px;">Temporal memory <span class="diff-changed-flag">stale after run</span></div><div class="card kv">${f.stale_memory
+      .map((k) => `<span class="badge b-memory">${escapeHtml(k)}</span>`)
+      .join(" ")}</div>`;
+  }
+  if (f.retrieval_denials && f.retrieval_denials.length) {
+    html += `<div class="panel-title" style="margin-top:10px;">Retrieval denials <span class="diff-changed-flag">access</span></div><div class="card kv">${f.retrieval_denials
+      .map(
+        (d) =>
+          `<div style="margin-bottom:4px;"><span class="badge b-retrieval">${escapeHtml(d.id || "?")}</span> ${escapeHtml(
+            d.reason || d.outcome
+          )}</div>`
+      )
+      .join("")}</div>`;
+  }
+  return html;
+}
+
+async function renderRegressionResult(data) {
+  const el = document.getElementById("reg-result");
+  if (!el) return;
+  const order = { regression: 0, suspicious: 1, normal: 2 };
+  const findings = [...data.findings].sort(
+    (a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9)
+  );
+  let html = `<div class="panel-title">Regression scan &middot; baseline ${escapeHtml(
+    data.baseline
+  )} vs ${data.findings.length} candidate(s)</div>`;
+  if (!findings.length) {
+    el.innerHTML = html + emptyHint("No candidate runs to analyze.");
+    return;
+  }
+  html += findings
+    .map(
+      (f) => `
+    <div class="card reg-finding ${f.status}">
+      <div class="reg-finding-head">
+        ${regressionStatusBadge(f.status)}
+        <span class="mono reg-finding-run">${escapeHtml(f.run_id)}</span>
+        ${f.output_changed ? `<span class="reg-flag">output changed</span>` : ""}
+        <span class="reg-action">
+          <a class="reg-link" href="#diff" data-diff="${escapeHtml(f.run_id)}">Diff vs baseline &rarr;</a>
+          <a class="reg-link" href="#replay" data-replay="${escapeHtml(f.run_id)}">Replay &rarr;</a>
+        </span>
+      </div>
+      <div class="reg-signal">${escapeHtml(f.signal)}</div>
+      ${
+        f.output_changed
+          ? `<div class="diff-braid" style="margin-top:6px;">
+               <div class="diff-cell changed good-side"><span class="k">baseline</span><br>${escapeHtml(
+                 truncate(f.baseline_output, 500)
+               )}</div>
+               <div class="diff-cell changed bad-side"><span class="k">candidate</span><br>${escapeHtml(
+                 truncate(f.candidate_output, 500)
+               )}</div>
+             </div>`
+          : ""
+      }
+      ${renderFindingEvidence(f)}
+    </div>`
+    )
+    .join("");
+  el.innerHTML = html;
+
+  el.querySelectorAll("a[data-diff]").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      navigateToDiff(state.regression.baseline, a.dataset.diff);
+    });
+  });
+  el.querySelectorAll("a[data-replay]").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      navigateToReplay(a.dataset.replay);
+    });
+  });
+}
+
+function navigateToDiff(baseline, candidate) {
+  state.diffA = baseline;
+  state.diffB = candidate;
+  switchToTab("diff");
+  renderDiff();
+}
+
+function navigateToReplay(runId) {
+  state.selectedRunId = runId;
+  renderRunList();
+  switchToTab("replay");
+  renderReplay();
+}
+
 
 /* -------------------------------------------------------------------- */
 /* Memory Chunk Diff -- side-by-side chunk comparison                      */

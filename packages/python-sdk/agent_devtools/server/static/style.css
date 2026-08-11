@@ -1053,3 +1053,20 @@ tr.denied-row td { background: rgba(255, 122, 104, 0.05); }
 .ec-broken-note { color: var(--warn); font-size: 12px; margin-top: 8px; }
 .ec-caveat { color: var(--text-faint); font-size: 11px; margin-top: 6px; }
 
+/* Regression tab */
+.reg-finding { border-left: 3px solid var(--border); padding: 10px 12px; margin-bottom: 10px; }
+.reg-finding.regression { border-left-color: var(--bad); }
+.reg-finding.suspicious { border-left-color: var(--warn); }
+.reg-finding.normal { border-left-color: var(--good); }
+.reg-finding-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.reg-finding-run { font-size: 11px; color: var(--text-faint); }
+.reg-flag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--warn); }
+.reg-signal { font-size: 13px; color: var(--text); margin-top: 6px; }
+.reg-action { margin-left: auto; display: flex; gap: 10px; }
+.reg-link { font-size: 11px; color: var(--signal); text-decoration: none; white-space: nowrap; }
+.reg-link:hover { text-decoration: underline; }
+.reg-status { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 8px; border-radius: 4px; font-weight: 700; }
+.reg-bad { background: var(--bad-dim); color: var(--bad); }
+.reg-warn { background: rgba(230,170,40,.12); color: var(--warn); }
+.reg-ok { background: var(--good-dim); color: var(--good); }
+

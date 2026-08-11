@@ -279,6 +279,37 @@ Two related mechanisms:
 
    The fixture format (`agent-devtools/fixture@1`) is a portable export of a run's events, produced by `TraceStore.export_fixture()` or the `/api/runs/{run_id}/fixture` endpoint. **Note:** the command is implemented, but this repository does not currently ship any example fixture files — you generate them from your own runs.
 
+#### Regression analysis tab — N-run regression scan
+
+The **Regression** tab compares one baseline (good) run against many candidate
+(bad) runs at once and ranks the findings. For each candidate it runs the same
+diff engine used by the two-run Diff tab, then labels the candidate
+`regression` / `suspicious` / `normal` from concrete evidence:
+
+- scored likely causes (the same heuristic callouts as Behavior Diff),
+- the causal evidence chain showing where the behavior changed,
+- scope mismatches and stale memory, retrieved after the run,
+- retrieval denials (permission-rejected results).
+
+Pick a baseline, multi-select one or more candidates, and click **Run regression
+scan**. Each finding shows a one-line signal, the changed output (when
+applicable), and **→ Diff vs baseline** / **→ Replay** links that jump straight
+into the existing Diff and Replay workflows, so the tab is a triage surface —
+not a replacement for them.
+
+```python
+from agent_devtools import trace
+
+with trace.run("good") as good:
+    ...  # known-good behavior
+
+with trace.run("bad") as bad:
+    ...  # the behavior you want to root-cause
+```
+
+Then open the Dashboard, go to the **Regression** tab, set the good run as the
+baseline and the bad run as a candidate.
+
 ### Deterministic Replay — is this run self-consistent?
 
 Click **Run Deterministic Replay** in the **Replay** tab (or call

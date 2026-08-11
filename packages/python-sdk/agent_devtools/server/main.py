@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..store import TraceStore, default_db_path
-from ..diff import diff_runs, diff_runs_multi
+from ..diff import diff_runs, diff_runs_multi, detect_regression
 from ..explain import explain_retrieval
 from ..memory_view import memory_view
 from ..scope import detect_scope_mismatches, scope_from_metadata
@@ -249,6 +249,26 @@ def get_diff_multi(baseline: str, candidates: str):
     if missing:
         raise HTTPException(404, f"run(s) not found: {', '.join(missing)}")
     return diff_runs_multi(store, baseline, cand_ids)
+
+
+@app.get("/api/regression")
+def get_regression(baseline: str, candidates: str):
+    """Classify N candidate runs relative to a baseline (good) run.
+
+    ``candidates`` is a comma-separated list of run ids. Each finding is
+    labeled ``regression`` / ``suspicious`` / ``normal`` from the concrete
+    evidence in the diff (scored likely causes + causal evidence chains) plus
+    the candidate's own temporal-memory, scope and retrieval-denial signals.
+    No numeric health score is computed.
+    """
+    store = get_store()
+    if store.get_run(baseline) is None:
+        raise HTTPException(404, f"run '{baseline}' not found")
+    cand_ids = [c.strip() for c in candidates.split(",") if c.strip()]
+    missing = [c for c in cand_ids if store.get_run(c) is None]
+    if missing:
+        raise HTTPException(404, f"run(s) not found: {', '.join(missing)}")
+    return detect_regression(store, baseline, cand_ids).to_dict()
 
 
 # Static DevTools UI. Mounted last so /api/* above always wins routing.

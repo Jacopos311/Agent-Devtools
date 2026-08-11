@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .store import TraceStore
+from .memory_view import memory_view
+from .scope import detect_scope_mismatches, scope_from_metadata
+from .explain import explain_retrieval
 
 
 def _text(value: Any) -> str:
@@ -111,6 +114,43 @@ def _recorded_token_counts(prompt_payload: Optional[dict]) -> Optional[dict]:
                 "source": "tokens"}
     return None
 
+
+
+# Keys that are already represented as structured diff fields. Anything else
+# left in a ``prompt.assembled`` payload (e.g. ``model``, ``temperature``,
+# ``top_p``) is treated as model/prompt configuration and diffed separately.
+_KNOWN_PROMPT_KEYS = {"system", "messages", "context", "usage", "token_count", "tokens"}
+
+
+def _diff_config(payload_a: Optional[dict], payload_b: Optional[dict]) -> list:
+    """Differences in model/prompt configuration keys on two prompt payloads.
+
+    Only keys that are *not* already handled as structured prompt fields
+    (system/messages/context/usage/...) are compared. Returns a list of
+    ``{key, good, bad}`` dicts (empty when the configuration matches).
+    """
+    a = payload_a or {}
+    b = payload_b or {}
+    diffs = []
+    for k in set(a) | set(b):
+        if k in _KNOWN_PROMPT_KEYS:
+            continue
+        va, vb = a.get(k), b.get(k)
+        if va != vb:
+            diffs.append({"key": k, "good": va, "bad": vb})
+    return diffs
+
+
+def _assertion_summary(events) -> dict:
+    """Pass/fail summary for the debug assertions recorded in a run's events."""
+    passed = sum(1 for e in events if e.type == "assertion.passed")
+    failed = sum(1 for e in events if e.type == "assertion.failed")
+    failures = [
+        {"name": e.payload.get("name"), "details": e.payload.get("details")}
+        for e in events
+        if e.type == "assertion.failed"
+    ]
+    return {"passed": passed, "failed": failed, "failures": failures}
 
 
 def _prompt_to_text(system: Optional[str], messages: Optional[list]) -> str:
@@ -658,7 +698,8 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
     if prompt_a and prompt_b:
         sys_a, sys_b = prompt_a.payload.get("system"), prompt_b.payload.get("system")
         msgs_a, msgs_b = prompt_a.payload.get("messages"), prompt_b.payload.get("messages")
-        prompt_changed = (sys_a != sys_b) or (msgs_a != msgs_b)
+        config_diff = _diff_config(prompt_a.payload, prompt_b.payload)
+        prompt_changed = (sys_a != sys_b) or (msgs_a != msgs_b) or bool(config_diff)
         if prompt_changed:
             # Token-level diff of the flattened prompt so the UI can show
             # exactly which tokens were added/removed/replaced. This is an
@@ -684,6 +725,7 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
                     ),
                     "recorded": recorded_counts,
                 },
+                "config_diff": config_diff,
             }]))
             if sys_a != sys_b:
                 narrative.append("The system prompt differed between runs.")
@@ -693,6 +735,11 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
                 narrative.append(
                     f"The prompt changed by {token_diff['removed_count']} removed and "
                     f"{token_diff['added_count']} added token span(s)."
+                )
+            for cf in config_diff:
+                narrative.append(
+                    f"Model/prompt configuration '{cf['key']}' changed from "
+                    f"{_text(cf['good'])!r} to {_text(cf['bad'])!r}."
                 )
         else:
             sections.append(DiffSection("prompt", False, []))
@@ -728,6 +775,24 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
             narrative.append(f"Memory key '{k}' held a different value in the bad run.")
     else:
         sections.append(DiffSection("memory", False, []))
+
+    # -- assertions ------------------------------------------------------
+    # Debug assertions (run.assert_that) are a direct correctness signal: a
+    # failing assertion is a regression even when the text output happens to
+    # match. Only surfaced when at least one run recorded assertions.
+    asrt_a = _assertion_summary(events_a)
+    asrt_b = _assertion_summary(events_b)
+    if asrt_a["passed"] or asrt_a["failed"] or asrt_b["passed"] or asrt_b["failed"]:
+        asrt_changed = asrt_a != asrt_b
+        sections.append(DiffSection("assertions", asrt_changed, [{
+            "good": asrt_a, "bad": asrt_b,
+        }]))
+        if asrt_b["failed"] > asrt_a["failed"]:
+            narrative.append("The bad run recorded failing debug assertions the good run did not.")
+        elif asrt_a["failed"] > asrt_b["failed"]:
+            narrative.append("The good run recorded failing debug assertions the bad run did not.")
+        elif asrt_a != asrt_b:
+            narrative.append("The number of passing/failing debug assertions differed between runs.")
 
     # -- output ----------------------------------------------------------
     out_a = _latest(events_a, "model.response")
@@ -873,4 +938,218 @@ def diff_runs(store: TraceStore, run_a: str, run_b: str) -> RunDiffResult:
         run_a=run_a, run_b=run_b, sections=sections,
         narrative=narrative, likely_causes=likely_causes,
         scored_causes=scored_causes, evidence_chains=evidence_chains,
+    )
+
+# ---------------------------------------------------------------------------
+# Regression report -- N-run regression analysis
+# ---------------------------------------------------------------------------
+# A RegressionReport classifies how each candidate run behaves relative to a
+# single baseline (good) run. The classification is qualitative and
+# evidence-based (regression / suspicious / normal) -- never an arbitrary
+# numerical health score. It is built entirely on top of primitives that
+# already exist:
+#
+#   * diff_runs()              -> scored likely causes + causal evidence chains
+#   * memory_view()            -> stale-memory keys in the candidate
+#   * detect_scope_mismatches  -> proven cross-scope leaks in the candidate
+#   * explain_retrieval()      -> recorded retrieval denials in the candidate
+#
+# A change is treated as a confirmed "regression" when the evidence supports
+# it: the diff engine emitted a *scored cause* for a changed memory/context
+# value that the bad run's answer mentions, or a causal evidence chain did not
+# break and explicitly reached the `output` stage, or a proven cross-scope
+# leak was recorded. Everything else that diverges is "suspicious" (needs a
+# human look), and runs that match the baseline are "normal". Nothing is
+# fabricated: a run with no scope metadata, no memory events, or no retrieval
+# results simply contributes no signal.
+
+
+# Retrieval outcomes that constitute a recorded denial / access problem rather
+# than an ordinary ranking rejection. A permission/access denial is a real
+# correctness/security signal, so it is treated as a regression-level finding.
+_REGRESSION_DENIAL_OUTCOMES = {"rejected_permission"}
+
+
+def _run_output_text(events) -> str:
+    latest = _latest(events, "model.response")
+    return _text(latest.payload.get("response")) if latest else ""
+
+
+def _chain_reached_output(chain: dict) -> bool:
+    """True when an evidence chain is intact (didn't break) and reached the
+    ``output`` stage of the bad run -- i.e. the diverged value is in the answer."""
+    if chain.get("broken_at") is not None:
+        return False
+    return any(
+        st.get("stage") == "output" and st.get("status") == "reached"
+        for st in chain.get("steps", [])
+    )
+
+
+def _retrieval_denials(events) -> list:
+    """Recorded retrieval denials (permission / access) in a run's events."""
+    explanations = explain_retrieval(events)
+    denials = []
+    for exp in explanations:
+        for r in exp.get("results", []):
+            outcome = r.get("outcome")
+            if outcome in _REGRESSION_DENIAL_OUTCOMES:
+                denials.append({
+                    "id": r.get("id"),
+                    "source": r.get("source"),
+                    "outcome": outcome,
+                    "reason": r.get("reason") or r.get("denial_reason") or "",
+                })
+    return denials
+
+@dataclass
+class RegressionFinding:
+    """One candidate run's regression classification and its evidence."""
+
+    run_id: str
+    status: str  # "regression" | "suspicious" | "normal"
+    output_changed: bool
+    reached_output: bool
+    signal: str
+    baseline_output: str
+    candidate_output: str
+    scored_causes: list
+    evidence_chains: list
+    scope_mismatches: list
+    stale_memory: list
+    retrieval_denials: list
+
+    def to_dict(self) -> dict:
+        return {
+            "run_id": self.run_id,
+            "status": self.status,
+            "output_changed": self.output_changed,
+            "reached_output": self.reached_output,
+            "signal": self.signal,
+            "baseline_output": self.baseline_output,
+            "candidate_output": self.candidate_output,
+            "scored_causes": self.scored_causes,
+            "evidence_chains": self.evidence_chains,
+            "scope_mismatches": self.scope_mismatches,
+            "stale_memory": self.stale_memory,
+            "retrieval_denials": self.retrieval_denials,
+        }
+
+
+@dataclass
+class RegressionReport:
+    """Result of comparing one baseline run against N candidate runs."""
+
+    baseline: str
+    candidates: list
+    findings: list  # list[RegressionFinding]
+
+    def to_dict(self) -> dict:
+        return {
+            "baseline": self.baseline,
+            "candidates": self.candidates,
+            "findings": [f.to_dict() for f in self.findings],
+            "statuses": {f.run_id: f.status for f in self.findings},
+        }
+def detect_regression(store: TraceStore, baseline: str, candidates) -> RegressionReport:
+    """Classify each candidate run against a baseline (good) run.
+
+    ``candidates`` is any iterable of run ids; the baseline itself is ignored
+    if present. Returns a RegressionReport. No numeric health score is
+    produced -- each finding is labeled from the concrete evidence it carries
+    (scored likely causes, causal evidence chains, scope mismatches, stale
+    memory keys and retrieval denials), so the UI can explain "why" and let
+    the user drill into the existing Diff / Replay workflow.
+    """
+    baseline_events = store.get_events(baseline)
+    baseline_out = _run_output_text(baseline_events)
+
+    findings = []
+    seen = []
+    for c in candidates:
+        if c == baseline or c in seen:
+            continue
+        seen.append(c)
+        run_c = store.get_run(c)
+        events_c = store.get_events(c) or []
+        c_meta = (run_c or {}).get("metadata") or {}
+
+        # Reuse the existing two-run diff (good=baseline, bad=candidate).
+        d = diff_runs(store, baseline, c).to_dict()
+
+        output_changed = any(
+            s.get("name") == "output" and s.get("changed")
+            for s in d.get("sections", [])
+        )
+        evidence_chains = d.get("evidence_chains", [])
+        reached_output = any(_chain_reached_output(ch) for ch in evidence_chains)
+
+        # Scored likely causes are emitted by diff_runs() when the bad run's
+        # answer *mentions* a changed memory/context value (literal substring
+        # or shared salient numeric token). That is the existing, verified
+        # heuristic for "the change reached the answer", so it counts as
+        # confirmation even when a strict evidence chain breaks at the output
+        # stage (models almost never repeat context verbatim).
+        scored_causes = d.get("scored_causes", [])
+        confirmed = bool(scored_causes) or reached_output
+
+        # Supporting evidence from the candidate's own trace.
+        stale = memory_view(events_c).get("stale", [])
+        scope_mm = detect_scope_mismatches(
+            events_c, expected_scope=scope_from_metadata(c_meta)
+        )
+        denials = _retrieval_denials(events_c)
+
+        if scope_mm:
+            status, signal = (
+                "regression",
+                "proven cross-scope leak: recorded evidence contradicts the "
+                "run's expected scope",
+            )
+        elif output_changed and confirmed:
+            status, signal = (
+                "regression",
+                "answer diverged from baseline and the change was traced to "
+                "the output (scored cause / evidence chain)",
+            )
+        elif output_changed:
+            status, signal = (
+                "suspicious",
+                "answer diverged from baseline but no single cause was confirmed "
+                "to reach it",
+            )
+        elif stale or denials:
+            reasons = []
+            if stale:
+                reasons.append("stale memory: " + ", ".join(stale))
+            if denials:
+                reasons.append(
+                    "retrieval denial: " + ", ".join(x["outcome"] for x in denials)
+                )
+            status, signal = (
+                "suspicious",
+                "no output divergence but latent risk (" + "; ".join(reasons) + ")",
+            )
+        else:
+            status, signal = ("normal", "no meaningful divergence from baseline")
+
+        findings.append(RegressionFinding(
+            run_id=c,
+            status=status,
+            output_changed=output_changed,
+            reached_output=reached_output,
+            signal=signal,
+            baseline_output=baseline_out,
+            candidate_output=_run_output_text(events_c),
+            scored_causes=scored_causes,
+            evidence_chains=evidence_chains,
+            scope_mismatches=scope_mm,
+            stale_memory=stale,
+            retrieval_denials=denials,
+        ))
+
+    return RegressionReport(
+        baseline=baseline,
+        candidates=seen,
+        findings=findings,
     )
