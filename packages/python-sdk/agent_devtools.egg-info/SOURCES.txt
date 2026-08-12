@@ -4,7 +4,10 @@ agent_devtools/cli.py
 agent_devtools/debugger.py
 agent_devtools/diff.py
 agent_devtools/explain.py
+agent_devtools/memory_view.py
 agent_devtools/redaction.py
+agent_devtools/replay.py
+agent_devtools/scope.py
 agent_devtools/store.py
 agent_devtools/trace.py
 agent_devtools.egg-info/PKG-INFO

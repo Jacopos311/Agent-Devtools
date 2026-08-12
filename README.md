@@ -5,7 +5,17 @@
 
 Most AI observability tools record what an agent did. Agent DevTools records the causal path: which memory influenced the answer, which retrieval candidate won, what context was injected, what prompt the LLM actually received, and what tools changed the output. Then it diffs a *good* run against a *bad* run and names the likely cause in plain language.
 
-![Behavior Diff](assets/dashboard-diff.png)
+![Agent DevTools demo — the stale-memory debugging workflow](assets/agent-devtools-demo.gif)
+
+**Inspect what the agent saw · Compare good and bad runs · Replay and investigate failures.**
+
+### See it in action
+
+![Run Overview — Graph view showing the step-by-step causal flow of an agent execution](assets/agent-devtools-overview.png)
+
+![Retrieval debugging — candidates ranked by score with explicit selected/rejected state and a human-readable reason for each decision](assets/agent-devtools-retrieval.png)
+
+![Good vs Bad — Behavior Diff surfaces the likely cause in plain language with a side-by-side Memory Chunk Diff showing rank flips and score changes](assets/agent-devtools-diff.png)
 
 ---
 
@@ -496,7 +506,7 @@ Every UI tab and the diff engine is a **derived view computed at read time** ove
 .
 ├── packages/python-sdk/
 │   └── agent_devtools/
-│       ├── __init__.py       # public API surface, version 0.2.0
+│       ├── __init__.py       # public API surface, version 0.3.0
 │       ├── trace.py          # trace.run() context manager + Run handle
 │       ├── store.py          # append-only SQLite trace store
 │       ├── diff.py           # Behavior Diff engine (sections/narrative/likely causes)
@@ -522,7 +532,7 @@ Core design principle (from `docs/vision.md`): store raw debug events append-onl
 
 ## Current limitations
 
-- **In-development, version 0.2.0.** The SDK, diff engine, and UI are functional and tested, but the API may change.
+- **In-development, version 0.3.0.** The SDK, diff engine, and UI are functional and tested, but the API may change.
 - **`agent-devtools test` has no shipped fixtures.** The command is implemented and works, but this repository ships no example fixture files.
 - **`AgentDebugger.stop()` is a no-op for the server thread.** It clears the internal "started" flag, but the background Uvicorn thread (a daemon) is only actually terminated when the process exits.
 - **Redaction is best-effort, not a security boundary.** `redact()` masks obvious secrets (API keys, tokens, passwords) by key name and common `sk-...` shapes before events are written to disk, but it is a courtesy, not a guarantee.

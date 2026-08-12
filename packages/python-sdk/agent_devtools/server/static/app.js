@@ -1093,9 +1093,13 @@ async function renderDiffResult(data) {
   data.sections.forEach((section) => {
     if (!section.changed) return;
     html += `<div class="diff-section-title">${escapeHtml(section.name)} <span class="diff-changed-flag">changed</span></div>`;
-    section.details.forEach((d) => {
-      html += renderDiffDetail(section.name, d);
-    });
+            if (section.name === "chunks") {
+      html += renderChunkDiff(section.details);
+    } else {
+      section.details.forEach((d) => {
+        html += renderDiffDetail(section.name, d);
+      });
+    }
   });
 
   return html;
@@ -1122,10 +1126,6 @@ async function renderDiffMultiResult(data) {
 }
 
 function renderDiffDetail(name, d) {
-  // The chunks section is a side-by-side table, not a detail card.
-  if (name === "chunks") {
-    return renderChunkDiff(d);
-  }
 
   switch (name) {
     case "input":
