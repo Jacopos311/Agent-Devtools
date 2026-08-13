@@ -416,6 +416,58 @@ with debugger.run("groq-agent") as run:
 
 Requires `langchain-groq` (`pip install "agent-devtools[groq]"`) and a `GROQ_API_KEY` (env var or `groq_api_key=...`). Missing key raises `GroqApiKeyError` after printing setup instructions (free key at console.groq.com). `wrap_groq(llm, debugger)` wraps an existing compatible chat model; calls made outside an active `debugger.run()` block create and finish their own run. Any attribute not overridden (e.g. `bind_tools`, `with_structured_output`) is delegated to the underlying model.
 
+### AgentShield
+
+`AgentShield` provides real-time financial guardrails and spend control for AI agents. `agent-devtools` integrates directly with AgentShield's `SpendEvaluationEmitter` (v1 schema) to log policy evaluations, spend limits, and block events into your trace store.
+
+#### In-process callback usage
+
+Pass `make_agentshield_callback(store)` directly to AgentShield's emitter:
+
+```python
+from agentshield import SpendControlEngine, SpendEvaluationEmitter
+from agent_devtools import TraceStore
+from agent_devtools.adapters.agentshield import make_agentshield_callback
+
+store = TraceStore()
+cb = make_agentshield_callback(store)
+
+engine = SpendControlEngine()
+emitter = SpendEvaluationEmitter(engine, on_event=cb)
+
+# Evaluate transaction; blocked/passed events automatically flow into TraceStore
+decision = emitter.evaluate_with_trace(
+    transaction={"amount": "500.00", "merchant": "openai-api", "category": "llm_inference"},
+    rules=[{"id": "r1", "type": "transaction_limit", "limit": "250.00"}],
+    trace_id="trace_42"
+)
+```
+
+#### NDJSON file ingestion
+
+For log-file tailing or asynchronous execution pipelines:
+
+```python
+from agent_devtools import TraceStore
+from agent_devtools.adapters.agentshield import ingest_ndjson_file
+
+store = TraceStore()
+ingest_ndjson_file(store, "path/to/agentshield.ndjson")
+```
+
+#### Event mapping
+
+AgentShield's `trace_id` maps directly to `agent-devtools`'s native `run_id`:
+
+| AgentShield field | agent-devtools event | Purpose |
+|---|---|---|
+| `agentshield.spend.evaluation` | `event_type` | Spend policy evaluation event |
+| `trace_id` | `run_id` | Joins spend evaluations directly to execution traces |
+| `transaction` | `payload.transaction` | Transaction details (amount, merchant, category) |
+| `decision` | `payload.decision` | Authoritative outcome (`ALLOWED`, `BLOCKED`, rule triggered) |
+| `evaluation` | `payload.evaluation` | Per-rule trace (triggered/passed/skipped, actual vs threshold) |
+
+
 ---
 
 ## CLI
