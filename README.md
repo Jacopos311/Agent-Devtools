@@ -433,13 +433,15 @@ store = TraceStore()
 cb = make_agentshield_callback(store)
 
 engine = SpendControlEngine()
-emitter = SpendEvaluationEmitter(engine, on_event=cb)
+emitter = SpendEvaluationEmitter(engine)
 
 # Evaluate transaction; blocked/passed events automatically flow into TraceStore
-decision = emitter.evaluate_with_trace(
+emitter.emit(
     transaction={"amount": "500.00", "merchant": "openai-api", "category": "llm_inference"},
-    rules=[{"id": "r1", "type": "transaction_limit", "limit": "250.00"}],
-    trace_id="trace_42"
+    rules=[{"id": "r1", "type": "transaction_limit", "priority": 1,
+            "params": {"max_amount": "250.00"}, "action": "BLOCK"}],
+    trace_id="trace_42",
+    on_event=cb,
 )
 ```
 
@@ -464,7 +466,7 @@ AgentShield's `trace_id` maps directly to `agent-devtools`'s native `run_id`:
 | `agentshield.spend.evaluation` | `event_type` | Spend policy evaluation event |
 | `trace_id` | `run_id` | Joins spend evaluations directly to execution traces |
 | `transaction` | `payload.transaction` | Transaction details (amount, merchant, category) |
-| `decision` | `payload.decision` | Authoritative outcome (`ALLOWED`, `BLOCKED`, rule triggered) |
+| `decision` | `payload.decision` | Authoritative decision object (`APPROVED` / `BLOCKED` / `FLAGGED` + reason, rule_triggered, severity) |
 | `evaluation` | `payload.evaluation` | Per-rule trace (triggered/passed/skipped, actual vs threshold) |
 
 
